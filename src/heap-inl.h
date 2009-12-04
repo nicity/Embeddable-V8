@@ -51,22 +51,23 @@ Object* Heap::AllocateSymbol(Vector<const char> str,
 Object* Heap::AllocateRaw(int size_in_bytes,
                           AllocationSpace space,
                           AllocationSpace retry_space) {
-  ASSERT(allocation_allowed_ && gc_state_ == NOT_IN_GC);
+  HeapData& heap_data = v8_context()->heap_data_;
+  ASSERT(heap_data.allocation_allowed_ && heap_data.gc_state_ == NOT_IN_GC);
   ASSERT(space != NEW_SPACE ||
          retry_space == OLD_POINTER_SPACE ||
          retry_space == OLD_DATA_SPACE);
 #ifdef DEBUG
   if (FLAG_gc_interval >= 0 &&
-      !disallow_allocation_failure_ &&
-      Heap::allocation_timeout_-- <= 0) {
+      !heap_data.disallow_allocation_failure_ &&
+      heap_data.allocation_timeout_-- <= 0) {
     return Failure::RetryAfterGC(size_in_bytes, space);
   }
-  Counters::objs_since_last_full.Increment();
-  Counters::objs_since_last_young.Increment();
+  INC_COUNTER(objs_since_last_full);
+  INC_COUNTER(objs_since_last_young);
 #endif
   Object* result;
   if (NEW_SPACE == space) {
-    result = new_space_.AllocateRaw(size_in_bytes);
+    result = heap_data.new_space_.AllocateRaw(size_in_bytes);
     if (always_allocate() && result->IsFailure()) {
       space = retry_space;
     } else {
@@ -75,20 +76,20 @@ Object* Heap::AllocateRaw(int size_in_bytes,
   }
 
   if (OLD_POINTER_SPACE == space) {
-    result = old_pointer_space_->AllocateRaw(size_in_bytes);
+    result = heap_data.old_pointer_space_->AllocateRaw(size_in_bytes);
   } else if (OLD_DATA_SPACE == space) {
-    result = old_data_space_->AllocateRaw(size_in_bytes);
+    result = heap_data.old_data_space_->AllocateRaw(size_in_bytes);
   } else if (CODE_SPACE == space) {
-    result = code_space_->AllocateRaw(size_in_bytes);
+    result = heap_data.code_space_->AllocateRaw(size_in_bytes);
   } else if (LO_SPACE == space) {
-    result = lo_space_->AllocateRaw(size_in_bytes);
+    result = heap_data.lo_space_->AllocateRaw(size_in_bytes);
   } else if (CELL_SPACE == space) {
-    result = cell_space_->AllocateRaw(size_in_bytes);
+    result = heap_data.cell_space_->AllocateRaw(size_in_bytes);
   } else {
     ASSERT(MAP_SPACE == space);
-    result = map_space_->AllocateRaw(size_in_bytes);
+    result = heap_data.map_space_->AllocateRaw(size_in_bytes);
   }
-  if (result->IsFailure()) old_gen_exhausted_ = true;
+  if (result->IsFailure()) heap_data.old_gen_exhausted_ = true;
   return result;
 }
 
@@ -111,53 +112,59 @@ Object* Heap::NumberFromUint32(uint32_t value) {
 
 Object* Heap::AllocateRawMap() {
 #ifdef DEBUG
-  Counters::objs_since_last_full.Increment();
-  Counters::objs_since_last_young.Increment();
+  INC_COUNTER(objs_since_last_full);
+  INC_COUNTER(objs_since_last_young);
 #endif
-  Object* result = map_space_->AllocateRaw(Map::kSize);
-  if (result->IsFailure()) old_gen_exhausted_ = true;
+  HeapData& heap_data = v8_context()->heap_data_;
+  Object* result = heap_data.map_space_->AllocateRaw(Map::kSize);
+  if (result->IsFailure()) heap_data.old_gen_exhausted_ = true;
   return result;
 }
 
 
 Object* Heap::AllocateRawCell() {
 #ifdef DEBUG
-  Counters::objs_since_last_full.Increment();
-  Counters::objs_since_last_young.Increment();
+  INC_COUNTER(objs_since_last_full);
+  INC_COUNTER(objs_since_last_young);
 #endif
-  Object* result = cell_space_->AllocateRaw(JSGlobalPropertyCell::kSize);
-  if (result->IsFailure()) old_gen_exhausted_ = true;
+  HeapData& heap_data = v8_context()->heap_data_;
+  Object* result = heap_data.cell_space_->AllocateRaw(
+    JSGlobalPropertyCell::kSize);
+  if (result->IsFailure()) heap_data.old_gen_exhausted_ = true;
   return result;
 }
 
 
 bool Heap::InNewSpace(Object* object) {
-  return new_space_.Contains(object);
+  return v8_context()->heap_data_.new_space_.Contains(object);
 }
 
 
 bool Heap::InFromSpace(Object* object) {
-  return new_space_.FromSpaceContains(object);
+  return v8_context()->heap_data_.new_space_.FromSpaceContains(object);
 }
 
 
 bool Heap::InToSpace(Object* object) {
-  return new_space_.ToSpaceContains(object);
+  return v8_context()->heap_data_.new_space_.ToSpaceContains(object);
 }
 
 
 bool Heap::ShouldBePromoted(Address old_address, int object_size) {
+  HeapData& heap_data = v8_context()->heap_data_;
   // An object should be promoted if:
   // - the object has survived a scavenge operation or
   // - to space is already 25% full.
-  return old_address < new_space_.age_mark()
-      || (new_space_.Size() + object_size) >= (new_space_.Capacity() >> 2);
+  return old_address < heap_data.new_space_.age_mark()
+      || ((heap_data.new_space_.Size() + object_size) >=
+          (heap_data.new_space_.Capacity() >> 2));
 }
 
 
 void Heap::RecordWrite(Address address, int offset) {
-  if (new_space_.Contains(address)) return;
-  ASSERT(!new_space_.FromSpaceContains(address));
+  HeapData& heap_data = v8_context()->heap_data_;
+  if (heap_data.new_space_.Contains(address)) return;
+  ASSERT(!heap_data.new_space_.FromSpaceContains(address));
   SLOW_ASSERT(Contains(address + offset));
   Page::SetRSet(address, offset);
 }
@@ -167,8 +174,8 @@ OldSpace* Heap::TargetSpace(HeapObject* object) {
   InstanceType type = object->map()->instance_type();
   AllocationSpace space = TargetSpaceId(type);
   return (space == OLD_POINTER_SPACE)
-      ? old_pointer_space_
-      : old_data_space_;
+      ? v8_context()->heap_data_.old_pointer_space_
+      : v8_context()->heap_data_.old_data_space_;
 }
 
 
@@ -228,31 +235,32 @@ void Heap::ScavengeObject(HeapObject** p, HeapObject* object) {
 
 int Heap::AdjustAmountOfExternalAllocatedMemory(int change_in_bytes) {
   ASSERT(HasBeenSetup());
-  int amount = amount_of_external_allocated_memory_ + change_in_bytes;
+  HeapData& heap_data = v8_context()->heap_data_;
+  int amount = heap_data.amount_of_external_allocated_memory_ + change_in_bytes;
   if (change_in_bytes >= 0) {
     // Avoid overflow.
-    if (amount > amount_of_external_allocated_memory_) {
-      amount_of_external_allocated_memory_ = amount;
+    if (amount > heap_data.amount_of_external_allocated_memory_) {
+      heap_data.amount_of_external_allocated_memory_ = amount;
     }
     int amount_since_last_global_gc =
-        amount_of_external_allocated_memory_ -
-        amount_of_external_allocated_memory_at_last_global_gc_;
-    if (amount_since_last_global_gc > external_allocation_limit_) {
+        heap_data.amount_of_external_allocated_memory_ -
+        heap_data.amount_of_external_allocated_memory_at_last_global_gc_;
+    if (amount_since_last_global_gc > heap_data.external_allocation_limit_) {
       CollectAllGarbage(false);
     }
   } else {
     // Avoid underflow.
     if (amount >= 0) {
-      amount_of_external_allocated_memory_ = amount;
+      heap_data.amount_of_external_allocated_memory_ = amount;
     }
   }
-  ASSERT(amount_of_external_allocated_memory_ >= 0);
-  return amount_of_external_allocated_memory_;
+  ASSERT(heap_data.amount_of_external_allocated_memory_ >= 0);
+  return heap_data.amount_of_external_allocated_memory_;
 }
 
 
 void Heap::SetLastScriptId(Object* last_script_id) {
-  roots_[kLastScriptIdRootIndex] = last_script_id;
+  v8_context()->heap_data_.roots_[kLastScriptIdRootIndex] = last_script_id;
 }
 
 
@@ -284,7 +292,7 @@ void Heap::SetLastScriptId(Object* last_script_id) {
       v8::internal::V8::FatalProcessOutOfMemory("CALL_AND_RETRY_1");      \
     }                                                                     \
     if (!__object__->IsRetryAfterGC()) RETURN_EMPTY;                      \
-    Counters::gc_last_resort_from_handles.Increment();                    \
+    INC_COUNTER(gc_last_resort_from_handles);                             \
     Heap::CollectAllGarbage(false);                                       \
     {                                                                     \
       AlwaysAllocateScope __scope__;                                      \
@@ -313,8 +321,9 @@ void Heap::SetLastScriptId(Object* last_script_id) {
 #ifdef DEBUG
 
 inline bool Heap::allow_allocation(bool new_state) {
-  bool old = allocation_allowed_;
-  allocation_allowed_ = new_state;
+  HeapData& heap_data = v8_context()->heap_data_;
+  bool old = heap_data.allocation_allowed_;
+  heap_data.allocation_allowed_ = new_state;
   return old;
 }
 

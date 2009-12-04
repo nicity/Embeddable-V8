@@ -37,14 +37,7 @@ namespace internal {
 // Character predicates
 
 
-unibrow::Predicate<IdentifierStart, 128> Scanner::kIsIdentifierStart;
-unibrow::Predicate<IdentifierPart, 128> Scanner::kIsIdentifierPart;
-unibrow::Predicate<unibrow::LineTerminator, 128> Scanner::kIsLineTerminator;
-unibrow::Predicate<unibrow::WhiteSpace, 128> Scanner::kIsWhiteSpace;
-
-
-StaticResource<Scanner::Utf8Decoder> Scanner::utf8_decoder_;
-
+ScannerData::ScannerData() {}
 
 // ----------------------------------------------------------------------------
 // UTF8Buffer
@@ -323,7 +316,9 @@ void KeywordMatcher::Step(uc32 input) {
 // ----------------------------------------------------------------------------
 // Scanner
 
-Scanner::Scanner(bool pre) : stack_overflow_(false), is_pre_parsing_(pre) { }
+Scanner::Scanner(bool pre) : stack_overflow_(false), is_pre_parsing_(pre),
+  scanner_data_(v8_context()->scanner_data_) {
+}
 
 
 void Scanner::Init(Handle<String> source, unibrow::CharacterStream* stream,
@@ -417,6 +412,10 @@ static inline bool IsByteOrderMark(uc32 c) {
 
 
 bool Scanner::SkipWhiteSpace() {
+  unibrow::Predicate<unibrow::WhiteSpace, 128>& kIsWhiteSpace =
+    scanner_data_.kIsWhiteSpace_;
+  unibrow::Predicate<unibrow::LineTerminator, 128>& kIsLineTerminator =
+    scanner_data_.kIsLineTerminator_;
   int start_position = source_pos();
 
   while (true) {
@@ -459,6 +458,8 @@ bool Scanner::SkipWhiteSpace() {
 Token::Value Scanner::SkipSingleLineComment() {
   Advance();
 
+  unibrow::Predicate<unibrow::LineTerminator, 128>& kIsLineTerminator =
+    scanner_data_.kIsLineTerminator_;
   // The line terminator at the end of the line is not considered
   // to be part of the single-line comment; it is recognized
   // separately by the lexical grammar and becomes part of the
@@ -513,6 +514,11 @@ Token::Value Scanner::ScanHtmlComment() {
 
 
 void Scanner::Scan() {
+  unibrow::Predicate<IdentifierPart, 128>& kIsIdentifierPart =
+    scanner_data_.kIsIdentifierPart_;
+  unibrow::Predicate<IdentifierStart, 128>& kIsIdentifierStart =
+    scanner_data_.kIsIdentifierStart_;
+
   next_.literal_buffer = NULL;
   Token::Value token;
   has_line_terminator_before_next_ = false;
@@ -809,7 +815,7 @@ void Scanner::ScanEscape() {
   Advance();
 
   // Skip escaped newlines.
-  if (kIsLineTerminator.get(c)) {
+  if (scanner_data_.kIsLineTerminator_.get(c)) {
     // Allow CR+LF newlines in multiline string literals.
     if (IsCarriageReturn(c) && IsLineFeed(c0_)) Advance();
     // Allow LF+CR newlines in multiline string literals.
@@ -851,6 +857,8 @@ Token::Value Scanner::ScanString() {
   Advance();  // consume quote
 
   StartLiteral();
+  unibrow::Predicate<unibrow::LineTerminator, 128>& kIsLineTerminator =
+    scanner_data_.kIsLineTerminator_;
   while (c0_ != quote && c0_ >= 0 && !kIsLineTerminator.get(c0_)) {
     uc32 c = c0_;
     Advance();
@@ -965,7 +973,8 @@ Token::Value Scanner::ScanNumber(bool seen_period) {
   // not be an identifier start or a decimal digit; see ECMA-262
   // section 7.8.3, page 17 (note that we read only one decimal digit
   // if the value is 0).
-  if (IsDecimalDigit(c0_) || kIsIdentifierStart.get(c0_))
+  if (IsDecimalDigit(c0_) ||
+      scanner_data_.kIsIdentifierStart_.get(c0_))
     return Token::ILLEGAL;
 
   return Token::NUMBER;
@@ -985,7 +994,10 @@ uc32 Scanner::ScanIdentifierUnicodeEscape() {
 
 
 Token::Value Scanner::ScanIdentifier() {
-  ASSERT(kIsIdentifierStart.get(c0_));
+  unibrow::Predicate<IdentifierPart, 128>& kIsIdentifierPart =
+    scanner_data_.kIsIdentifierPart_;
+
+  ASSERT(scanner_data_.kIsIdentifierStart_.get(c0_));
 
   StartLiteral();
   KeywordMatcher keyword_match;
@@ -994,7 +1006,7 @@ Token::Value Scanner::ScanIdentifier() {
   if (c0_ == '\\') {
     uc32 c = ScanIdentifierUnicodeEscape();
     // Only allow legal identifier start characters.
-    if (!kIsIdentifierStart.get(c)) return Token::ILLEGAL;
+    if (!scanner_data_.kIsIdentifierStart_.get(c)) return Token::ILLEGAL;
     AddChar(c);
     keyword_match.Fail();
   } else {
@@ -1025,9 +1037,13 @@ Token::Value Scanner::ScanIdentifier() {
 
 
 bool Scanner::IsIdentifier(unibrow::CharacterStream* buffer) {
+  ScannerData& scanner_data = v8_context()->scanner_data_;
+  unibrow::Predicate<IdentifierPart, 128>& kIsIdentifierPart =
+    scanner_data.kIsIdentifierPart_;
+
   // Checks whether the buffer contains an identifier (no escape).
   if (!buffer->has_more()) return false;
-  if (!kIsIdentifierStart.get(buffer->GetNext())) return false;
+  if (!scanner_data.kIsIdentifierStart_.get(buffer->GetNext())) return false;
   while (buffer->has_more()) {
     if (!kIsIdentifierPart.get(buffer->GetNext())) return false;
   }
@@ -1050,6 +1066,9 @@ bool Scanner::ScanRegExpPattern(bool seen_equal) {
   StartLiteral();
   if (seen_equal)
     AddChar('=');
+
+  unibrow::Predicate<unibrow::LineTerminator, 128>& kIsLineTerminator =
+    scanner_data_.kIsLineTerminator_;
 
   while (c0_ != '/' || in_character_class) {
     if (kIsLineTerminator.get(c0_) || c0_ < 0)
@@ -1077,6 +1096,9 @@ bool Scanner::ScanRegExpPattern(bool seen_equal) {
 bool Scanner::ScanRegExpFlags() {
   // Scan regular expression flags.
   StartLiteral();
+  unibrow::Predicate<IdentifierPart, 128>& kIsIdentifierPart =
+    scanner_data_.kIsIdentifierPart_;
+
   while (kIsIdentifierPart.get(c0_)) {
     if (c0_ == '\\') {
       uc32 c = ScanIdentifierUnicodeEscape();

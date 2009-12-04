@@ -4191,16 +4191,33 @@ class ExternalTwoByteString: public ExternalString {
   DISALLOW_IMPLICIT_CONSTRUCTORS(ExternalTwoByteString);
 };
 
+class Relocatable;
+class RelocatableData {
+ public:
+  inline void save(Relocatable* new_top, Relocatable*& saved_old_top) {
+    saved_old_top = top_;
+    top_ = new_top;
+  }
+  inline void restore(Relocatable* top, Relocatable* saved_old_top) {
+    ASSERT_EQ(top_, top);
+    top_ = saved_old_top;
+  }
+ private:
+  friend class V8Context;
+  friend class Relocatable;
+  Relocatable * top_;
+  RelocatableData();
+  DISALLOW_COPY_AND_ASSIGN(RelocatableData);
+};
 
 // Utility superclass for stack-allocated objects that must be updated
 // on gc.  It provides two ways for the gc to update instances, either
 // iterating or updating after gc.
 class Relocatable BASE_EMBEDDED {
  public:
-  inline Relocatable() : prev_(top_) { top_ = this; }
+  inline Relocatable() { v8_context()->relocatable_data_.save(this, prev_); }
   virtual ~Relocatable() {
-    ASSERT_EQ(top_, this);
-    top_ = prev_;
+    v8_context()->relocatable_data_.restore(this, prev_);
   }
   virtual void IterateInstance(ObjectVisitor* v) { }
   virtual void PostGarbageCollection() { }
@@ -4213,7 +4230,6 @@ class Relocatable BASE_EMBEDDED {
   static void Iterate(ObjectVisitor* v, Relocatable* top);
   static char* Iterate(ObjectVisitor* v, char* t);
  private:
-  static Relocatable* top_;
   Relocatable* prev_;
 };
 
@@ -4865,6 +4881,18 @@ class BooleanBit : public AllStatic {
     }
     return value;
   }
+};
+
+class ObjectsData {
+ public:
+  StringInputBuffer string_compare_buffer_a_;
+  StringInputBuffer string_compare_buffer_b_;
+  StaticResource<StringInputBuffer> string_input_buffer_;
+
+ private:
+  friend class V8Context;
+  ObjectsData() {}
+  DISALLOW_COPY_AND_ASSIGN(ObjectsData);
 };
 
 } }  // namespace v8::internal

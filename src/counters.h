@@ -31,6 +31,17 @@
 namespace v8 {
 namespace internal {
 
+class StatsTableData {
+  CounterLookupCallback lookup_function_;
+  CreateHistogramCallback create_histogram_function_;
+  AddHistogramSampleCallback add_histogram_sample_function_;
+  StatsTableData();
+
+  friend class StatsTable;
+  friend class V8Context;
+  DISALLOW_COPY_AND_ASSIGN(StatsTableData);
+};
+
 // StatsCounters is an interface for plugging into external
 // counters for monitoring.  Counters can be looked up and
 // manipulated by name.
@@ -40,23 +51,23 @@ class StatsTable : public AllStatic {
   // Register an application-defined function where
   // counters can be looked up.
   static void SetCounterFunction(CounterLookupCallback f) {
-    lookup_function_ = f;
+    v8_context()->stats_table_data_.lookup_function_ = f;
   }
 
   // Register an application-defined function to create
   // a histogram for passing to the AddHistogramSample function
   static void SetCreateHistogramFunction(CreateHistogramCallback f) {
-    create_histogram_function_ = f;
+    v8_context()->stats_table_data_.create_histogram_function_ = f;
   }
 
   // Register an application-defined function to add a sample
   // to a histogram created with CreateHistogram function
   static void SetAddHistogramSampleFunction(AddHistogramSampleCallback f) {
-    add_histogram_sample_function_ = f;
+    v8_context()->stats_table_data_.add_histogram_sample_function_ = f;
   }
 
   static bool HasCounterFunction() {
-    return lookup_function_ != NULL;
+    return v8_context()->stats_table_data_.lookup_function_ != NULL;
   }
 
   // Lookup the location of a counter by name.  If the lookup
@@ -66,8 +77,10 @@ class StatsTable : public AllStatic {
   // The return value must not be cached and re-used across
   // threads, although a single thread is free to cache it.
   static int *FindLocation(const char* name) {
-    if (!lookup_function_) return NULL;
-    return lookup_function_(name);
+    CounterLookupCallback lookup_function =
+      v8_context()->stats_table_data_.lookup_function_;
+    if (!lookup_function) return NULL;
+    return lookup_function(name);
   }
 
   // Create a histogram by name. If the create is successful,
@@ -79,21 +92,20 @@ class StatsTable : public AllStatic {
                                int min,
                                int max,
                                size_t buckets) {
-    if (!create_histogram_function_) return NULL;
-    return create_histogram_function_(name, min, max, buckets);
+    CreateHistogramCallback create_histogram_function =
+      v8_context()->stats_table_data_.create_histogram_function_;
+    if (!create_histogram_function) return NULL;
+    return create_histogram_function(name, min, max, buckets);
   }
 
   // Add a sample to a histogram created with the CreateHistogram
   // function.
   static void AddHistogramSample(void* histogram, int sample) {
-    if (!add_histogram_sample_function_) return;
-    return add_histogram_sample_function_(histogram, sample);
+    AddHistogramSampleCallback add_histogram_sample_function =
+      v8_context()->stats_table_data_.add_histogram_sample_function_;
+    if (!add_histogram_sample_function) return;
+    return add_histogram_sample_function(histogram, sample);
   }
-
- private:
-  static CounterLookupCallback lookup_function_;
-  static CreateHistogramCallback create_histogram_function_;
-  static AddHistogramSampleCallback add_histogram_sample_function_;
 };
 
 // StatsCounters are dynamically created values which can be tracked in

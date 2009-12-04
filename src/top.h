@@ -43,6 +43,7 @@ class SaveContext;  // Forward declaration.
 
 class ThreadLocalTop BASE_EMBEDDED {
  public:
+  ThreadLocalTop();
   // Initialize the thread data.
   void Initialize();
 
@@ -115,6 +116,7 @@ class ThreadLocalTop BASE_EMBEDDED {
 
  private:
   Address try_catch_handler_address_;
+  DISALLOW_COPY_AND_ASSIGN(ThreadLocalTop);
 };
 
 #define TOP_ADDRESS_LIST(C)            \
@@ -131,6 +133,25 @@ class ThreadLocalTop BASE_EMBEDDED {
 #define TOP_ADDRESS_LIST_PROF(C)
 #endif
 
+class TopPrivateData;
+
+class TopData {
+  // The context that initiated this JS execution.
+  ThreadLocalTop thread_local_;
+
+  // Debug.
+  // Mutex for serializing access to break control structures.
+  Mutex* break_access_;
+
+  TopPrivateData* top_private_data_;
+  TopData();
+
+  friend class Top;
+  friend class TopPrivateData;
+  friend class ExecutionAccess;
+  friend class V8Context;
+  DISALLOW_COPY_AND_ASSIGN(TopData);
+};
 
 class Top {
  public:
@@ -145,53 +166,66 @@ class Top {
   static Address get_address_from_id(AddressId id);
 
   // Access to top context (where the current function object was created).
-  static Context* context() { return thread_local_.context_; }
-  static void set_context(Context* context) {
-    thread_local_.context_ = context;
+  static Context* context() {
+    return v8_context()->top_data_.thread_local_.context_;
   }
-  static Context** context_address() { return &thread_local_.context_; }
+  static void set_context(Context* context) {
+    v8_context()->top_data_.thread_local_.context_ = context;
+  }
+  static Context** context_address() {
+    return &v8_context()->top_data_.thread_local_.context_;
+  }
 
-  static SaveContext* save_context() {return thread_local_.save_context_; }
+  static SaveContext* save_context() {
+    return v8_context()->top_data_.thread_local_.save_context_;
+  }
   static void set_save_context(SaveContext* save) {
-    thread_local_.save_context_ = save;
+    v8_context()->top_data_.thread_local_.save_context_ = save;
   }
 
   // Access to current thread id.
-  static int thread_id() { return thread_local_.thread_id_; }
-  static void set_thread_id(int id) { thread_local_.thread_id_ = id; }
+  static int thread_id() {
+    return v8_context()->top_data_.thread_local_.thread_id_;
+  }
+  static void set_thread_id(int id) {
+    v8_context()->top_data_.thread_local_.thread_id_ = id;
+  }
 
   // Interface to pending exception.
   static Object* pending_exception() {
     ASSERT(has_pending_exception());
-    return thread_local_.pending_exception_;
+    return v8_context()->top_data_.thread_local_.pending_exception_;
   }
   static bool external_caught_exception() {
-    return thread_local_.external_caught_exception_;
+    return v8_context()->top_data_.thread_local_.external_caught_exception_;
   }
   static void set_pending_exception(Object* exception) {
-    thread_local_.pending_exception_ = exception;
+    v8_context()->top_data_.thread_local_.pending_exception_ = exception;
   }
   static void clear_pending_exception() {
-    thread_local_.pending_exception_ = Heap::the_hole_value();
+    v8_context()->top_data_.thread_local_.pending_exception_ =
+      Heap::the_hole_value();
   }
 
   static Object** pending_exception_address() {
-    return &thread_local_.pending_exception_;
+    return &v8_context()->top_data_.thread_local_.pending_exception_;
   }
   static bool has_pending_exception() {
-    return !thread_local_.pending_exception_->IsTheHole();
+    return !v8_context()->top_data_.thread_local_.pending_exception_->
+      IsTheHole();
   }
   static void clear_pending_message() {
-    thread_local_.has_pending_message_ = false;
-    thread_local_.pending_message_ = NULL;
-    thread_local_.pending_message_obj_ = Heap::the_hole_value();
-    thread_local_.pending_message_script_ = NULL;
+    ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
+    thread_local.has_pending_message_ = false;
+    thread_local.pending_message_ = NULL;
+    thread_local.pending_message_obj_ = Heap::the_hole_value();
+    thread_local.pending_message_script_ = NULL;
   }
   static v8::TryCatch* try_catch_handler() {
-    return thread_local_.TryCatchHandler();
+    return v8_context()->top_data_.thread_local_.TryCatchHandler();
   }
   static Address try_catch_handler_address() {
-    return thread_local_.try_catch_handler_address();
+    return v8_context()->top_data_.thread_local_.try_catch_handler_address();
   }
   // This method is called by the api after operations that may throw
   // exceptions.  If an exception was thrown and not handled by an external
@@ -201,29 +235,32 @@ class Top {
 
 
   static bool* external_caught_exception_address() {
-    return &thread_local_.external_caught_exception_;
+    return &v8_context()->top_data_.thread_local_.external_caught_exception_;
   }
 
   static Object** scheduled_exception_address() {
-    return &thread_local_.scheduled_exception_;
+    return &v8_context()->top_data_.thread_local_.scheduled_exception_;
   }
 
   static Object* scheduled_exception() {
     ASSERT(has_scheduled_exception());
-    return thread_local_.scheduled_exception_;
+    return v8_context()->top_data_.thread_local_.scheduled_exception_;
   }
   static bool has_scheduled_exception() {
-    return !thread_local_.scheduled_exception_->IsTheHole();
+    return !v8_context()->top_data_.thread_local_.scheduled_exception_->
+      IsTheHole();
   }
   static void clear_scheduled_exception() {
-    thread_local_.scheduled_exception_ = Heap::the_hole_value();
+    v8_context()->top_data_.thread_local_.scheduled_exception_ =
+      Heap::the_hole_value();
   }
 
   static void setup_external_caught() {
-    thread_local_.external_caught_exception_ =
+    ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
+    thread_local.external_caught_exception_ =
         has_pending_exception() &&
-        (thread_local_.catcher_ != NULL) &&
-        (try_catch_handler() == thread_local_.catcher_);
+        (thread_local.catcher_ != NULL) &&
+        (try_catch_handler() == thread_local.catcher_);
   }
 
   // Tells whether the current context has experienced an out of memory
@@ -237,9 +274,11 @@ class Top {
   static Address handler(ThreadLocalTop* thread) { return thread->handler_; }
 
   static inline Address* c_entry_fp_address() {
-    return &thread_local_.c_entry_fp_;
+    return &v8_context()->top_data_.thread_local_.c_entry_fp_;
   }
-  static inline Address* handler_address() { return &thread_local_.handler_; }
+  static inline Address* handler_address() {
+    return &v8_context()->top_data_.thread_local_.handler_;
+  }
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
   // Bottom JS entry (see StackTracer::Trace in log.cc).
@@ -247,12 +286,14 @@ class Top {
     return thread->js_entry_sp_;
   }
   static inline Address* js_entry_sp_address() {
-    return &thread_local_.js_entry_sp_;
+    return &v8_context()->top_data_.thread_local_.js_entry_sp_;
   }
 #endif
 
   // Generated code scratch locations.
-  static void* formal_count_address() { return &thread_local_.formal_count_; }
+  static void* formal_count_address() {
+    return &v8_context()->top_data_.thread_local_.formal_count_;
+  }
 
   static void MarkCompactPrologue(bool is_compacting);
   static void MarkCompactEpilogue(bool is_compacting);
@@ -339,7 +380,8 @@ class Top {
   static Handle<Context> GetCallingGlobalContext();
 
   static Handle<JSBuiltinsObject> builtins() {
-    return Handle<JSBuiltinsObject>(thread_local_.context_->builtins());
+    return Handle<JSBuiltinsObject>(
+      v8_context()->top_data_.thread_local_.context_->builtins());
   }
 
   static Object* LookupSpecialFunction(JSObject* receiver,
@@ -356,17 +398,19 @@ class Top {
   GLOBAL_CONTEXT_FIELDS(TOP_GLOBAL_CONTEXT_FIELD_ACCESSOR)
 #undef TOP_GLOBAL_CONTEXT_FIELD_ACCESSOR
 
-  static inline ThreadLocalTop* GetCurrentThread() { return &thread_local_; }
+  static inline ThreadLocalTop* GetCurrentThread() {
+    return &v8_context()->top_data_.thread_local_;
+  }
   static int ArchiveSpacePerThread() { return sizeof(ThreadLocalTop); }
   static char* ArchiveThread(char* to);
   static char* RestoreThread(char* from);
-  static void FreeThreadResources() { thread_local_.Free(); }
+  static void FreeThreadResources() {
+    v8_context()->top_data_.thread_local_.Free();
+  }
 
   static const char* kStackOverflowMessage;
 
  private:
-  // The context that initiated this JS execution.
-  static ThreadLocalTop thread_local_;
   static void InitializeThreadLocal();
   static void PrintStackTrace(FILE* out, ThreadLocalTop* thread);
   static void MarkCompactPrologue(bool is_compacting,
@@ -374,15 +418,15 @@ class Top {
   static void MarkCompactEpilogue(bool is_compacting,
                                   ThreadLocalTop* archived_thread_data);
 
-  // Debug.
-  // Mutex for serializing access to break control structures.
-  static Mutex* break_access_;
-
   friend class SaveContext;
   friend class AssertNoContextChange;
   friend class ExecutionAccess;
 
+  static void PostConstruct();
+  static void PreDestroy();
   static void FillCache();
+
+  friend class V8Context;
 };
 
 

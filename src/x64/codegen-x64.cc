@@ -306,7 +306,7 @@ void CodeGenerator::GenCode(FunctionLiteral* function) {
 
   // New scope to get automatic timing calculation.
   {  // NOLINT
-    HistogramTimerScope codegen_timer(&Counters::code_generation);
+    HistogramTimerScope codegen_timer(&COUNTER(code_generation));
     CodeGenState state(this);
 
     // Entry:
@@ -468,7 +468,7 @@ void CodeGenerator::GenCode(FunctionLiteral* function) {
 
   // Process any deferred code using the register allocator.
   if (!HasStackOverflow()) {
-    HistogramTimerScope deferred_timer(&Counters::deferred_code_generation);
+    HistogramTimerScope deferred_timer(&COUNTER(deferred_code_generation));
     JumpTarget::set_compiling_deferred_code(true);
     ProcessDeferred();
     JumpTarget::set_compiling_deferred_code(false);
@@ -585,7 +585,7 @@ void DeferredReferenceGetKeyedValue::Generate() {
   // 7-byte NOP with non-zero immediate (0f 1f 80 xxxxxxxx) which won't
   // be generated normally.
   masm_->testl(rax, Immediate(-delta_to_patch_site));
-  __ IncrementCounter(&Counters::keyed_load_inline_miss, 1);
+  __ IncrementCounter(&COUNTER(keyed_load_inline_miss), 1);
 
   if (!dst_.is(rax)) __ movq(dst_, rax);
   __ pop(key_);
@@ -615,7 +615,7 @@ class DeferredReferenceSetKeyedValue: public DeferredCode {
 
 
 void DeferredReferenceSetKeyedValue::Generate() {
-  __ IncrementCounter(&Counters::keyed_store_inline_miss, 1);
+  __ IncrementCounter(&COUNTER(keyed_store_inline_miss), 1);
   // Push receiver and key arguments on the stack.
   __ push(receiver_);
   __ push(key_);
@@ -5273,7 +5273,7 @@ void DeferredReferenceGetNamedValue::Generate() {
   // Here we use masm_-> instead of the __ macro because this is the
   // instruction that gets patched and coverage code gets in the way.
   masm_->testl(rax, Immediate(-delta_to_patch_site));
-  __ IncrementCounter(&Counters::named_load_inline_miss, 1);
+  __ IncrementCounter(&COUNTER(named_load_inline_miss), 1);
 
   if (!dst_.is(rax)) __ movq(dst_, rax);
   __ pop(receiver_);
@@ -5904,7 +5904,7 @@ void Reference::GetValue() {
         int offset = kMaxInt;
         masm->movq(value.reg(), FieldOperand(receiver.reg(), offset));
 
-        __ IncrementCounter(&Counters::named_load_inline, 1);
+        __ IncrementCounter(&COUNTER(named_load_inline), 1);
         deferred->BindExit();
         cgen_->frame()->Push(&receiver);
         cgen_->frame()->Push(&value);
@@ -6002,7 +6002,7 @@ void Reference::GetValue() {
         index.Unuse();
         __ CompareRoot(value.reg(), Heap::kTheHoleValueRootIndex);
         deferred->Branch(equal);
-        __ IncrementCounter(&Counters::keyed_load_inline, 1);
+        __ IncrementCounter(&COUNTER(keyed_load_inline), 1);
 
         deferred->BindExit();
         // Restore the receiver and key to the frame and push the
@@ -6173,7 +6173,7 @@ void Reference::SetValue(InitState init_state) {
                         index.scale,
                         FixedArray::kHeaderSize - kHeapObjectTag),
                 value.reg());
-        __ IncrementCounter(&Counters::keyed_store_inline, 1);
+        __ IncrementCounter(&COUNTER(keyed_store_inline), 1);
 
         deferred->BindExit();
 
@@ -7437,7 +7437,7 @@ void GenericBinaryOpStub::GenerateCall(
 
     // Update flags to indicate that arguments are in registers.
     SetArgsInRegisters();
-    __ IncrementCounter(&Counters::generic_binary_stub_calls_regs, 1);
+    __ IncrementCounter(&COUNTER(generic_binary_stub_calls_regs), 1);
   }
 
   // Call the stub.
@@ -7469,7 +7469,7 @@ void GenericBinaryOpStub::GenerateCall(
 
     // Update flags to indicate that arguments are in registers.
     SetArgsInRegisters();
-    __ IncrementCounter(&Counters::generic_binary_stub_calls_regs, 1);
+    __ IncrementCounter(&COUNTER(generic_binary_stub_calls_regs), 1);
   }
 
   // Call the stub.
@@ -7500,7 +7500,7 @@ void GenericBinaryOpStub::GenerateCall(
     }
     // Update flags to indicate that arguments are in registers.
     SetArgsInRegisters();
-    __ IncrementCounter(&Counters::generic_binary_stub_calls_regs, 1);
+    __ IncrementCounter(&COUNTER(generic_binary_stub_calls_regs), 1);
   }
 
   // Call the stub.

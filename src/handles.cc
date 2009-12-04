@@ -43,25 +43,25 @@ namespace v8 {
 namespace internal {
 
 
-v8::ImplementationUtilities::HandleScopeData HandleScope::current_ =
-    { -1, NULL, NULL };
-
 
 int HandleScope::NumberOfHandles() {
   int n = HandleScopeImplementer::instance()->blocks()->length();
   if (n == 0) return 0;
   return ((n - 1) * kHandleBlockSize) + static_cast<int>(
-      (current_.next - HandleScopeImplementer::instance()->blocks()->last()));
+      (v8_context()->handle_scope_data_.next -
+       HandleScopeImplementer::instance()->blocks()->last()));
 }
 
 
 Object** HandleScope::Extend() {
-  Object** result = current_.next;
+  ImplementationUtilities::HandleScopeData& current =
+    v8_context()->handle_scope_data_;
+  Object** result = current.next;
 
-  ASSERT(result == current_.limit);
+  ASSERT(result == current.limit);
   // Make sure there's at least one scope on the stack and that the
   // top of the scope stack isn't a barrier.
-  if (current_.extensions < 0) {
+  if (current.extensions < 0) {
     Utils::ReportApiFailure("v8::HandleScope::CreateHandle()",
                             "Cannot create a handle without a HandleScope");
     return NULL;
@@ -71,21 +71,21 @@ Object** HandleScope::Extend() {
   // for fast creation of scopes after scope barriers.
   if (!impl->blocks()->is_empty()) {
     Object** limit = &impl->blocks()->last()[kHandleBlockSize];
-    if (current_.limit != limit) {
-      current_.limit = limit;
+    if (current.limit != limit) {
+      current.limit = limit;
     }
   }
 
   // If we still haven't found a slot for the handle, we extend the
   // current handle scope by allocating a new handle block.
-  if (result == current_.limit) {
+  if (result == current.limit) {
     // If there's a spare block, use it for growing the current scope.
     result = impl->GetSpareOrNewBlock();
     // Add the extension to the global list of blocks, but count the
     // extension as part of the current scope.
     impl->blocks()->Add(result);
-    current_.extensions++;
-    current_.limit = &result[kHandleBlockSize];
+    current.extensions++;
+    current.limit = &result[kHandleBlockSize];
   }
 
   return result;
@@ -93,8 +93,10 @@ Object** HandleScope::Extend() {
 
 
 void HandleScope::DeleteExtensions() {
-  ASSERT(current_.extensions != 0);
-  HandleScopeImplementer::instance()->DeleteExtensions(current_.extensions);
+  ImplementationUtilities::HandleScopeData& current =
+    v8_context()->handle_scope_data_;
+  ASSERT(current.extensions != 0);
+  HandleScopeImplementer::instance()->DeleteExtensions(current.extensions);
 }
 
 
@@ -107,17 +109,18 @@ void HandleScope::ZapRange(Object** start, Object** end) {
 
 
 Address HandleScope::current_extensions_address() {
-  return reinterpret_cast<Address>(&current_.extensions);
+  return reinterpret_cast<Address>(
+    &v8_context()->handle_scope_data_.extensions);
 }
 
 
 Address HandleScope::current_next_address() {
-  return reinterpret_cast<Address>(&current_.next);
+  return reinterpret_cast<Address>(&v8_context()->handle_scope_data_.next);
 }
 
 
 Address HandleScope::current_limit_address() {
-  return reinterpret_cast<Address>(&current_.limit);
+  return reinterpret_cast<Address>(&v8_context()->handle_scope_data_.limit);
 }
 
 
@@ -398,7 +401,7 @@ static void ClearWrapperCache(Persistent<v8::Value> handle, void*) {
   ASSERT(proxy->proxy() == reinterpret_cast<Address>(cache.location()));
   proxy->set_proxy(0);
   GlobalHandles::Destroy(cache.location());
-  Counters::script_wrappers.Decrement();
+  DEC_COUNTER(script_wrappers);
 }
 
 
@@ -410,7 +413,7 @@ Handle<JSValue> GetScriptWrapper(Handle<Script> script) {
   }
 
   // Construct a new script wrapper.
-  Counters::script_wrappers.Increment();
+  INC_COUNTER(script_wrappers);
   Handle<JSFunction> constructor = Top::script_function();
   Handle<JSValue> result =
       Handle<JSValue>::cast(Factory::NewJSObject(constructor));
@@ -617,7 +620,7 @@ Handle<FixedArray> GetKeysInFixedArrayFor(Handle<JSObject> object,
 
 
 Handle<JSArray> GetKeysFor(Handle<JSObject> object) {
-  Counters::for_in.Increment();
+  INC_COUNTER(for_in);
   Handle<FixedArray> elements = GetKeysInFixedArrayFor(object,
                                                        INCLUDE_PROTOS);
   return Factory::NewJSArrayWithElements(elements);
@@ -629,11 +632,11 @@ Handle<FixedArray> GetEnumPropertyKeys(Handle<JSObject> object,
   int index = 0;
   if (object->HasFastProperties()) {
     if (object->map()->instance_descriptors()->HasEnumCache()) {
-      Counters::enum_cache_hits.Increment();
+      INC_COUNTER(enum_cache_hits);
       DescriptorArray* desc = object->map()->instance_descriptors();
       return Handle<FixedArray>(FixedArray::cast(desc->GetEnumCache()));
     }
-    Counters::enum_cache_misses.Increment();
+    INC_COUNTER(enum_cache_misses);
     int num_enum = object->NumberOfEnumProperties();
     Handle<FixedArray> storage = Factory::NewFixedArray(num_enum);
     Handle<FixedArray> sort_array = Factory::NewFixedArray(num_enum);

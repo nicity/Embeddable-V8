@@ -86,6 +86,14 @@ class Compiler : public AllStatic {
                               Handle<Script> script);
 };
 
+class CompilerData {
+  StaticResource<SafeStringInputBuffer> safe_string_input_buffer_;
+
+  friend class V8Context;
+  friend class Compiler;
+  CompilerData();
+  DISALLOW_COPY_AND_ASSIGN(CompilerData);
+};
 
 // During compilation we need a global list of handles to constants
 // for frame elements.  When the zone gets deleted, we make sure to

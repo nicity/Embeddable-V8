@@ -536,7 +536,7 @@ int ContextSlotCache::Hash(Code* code, String* name) {
   // Uses only lower 32 bits if pointers are larger.
   uintptr_t addr_hash =
       static_cast<uint32_t>(reinterpret_cast<uintptr_t>(code)) >> 2;
-  return (addr_hash ^ name->Hash()) % kLength;
+  return (addr_hash ^ name->Hash()) % ContextSlotCacheData::kLength;
 }
 
 
@@ -544,9 +544,10 @@ int ContextSlotCache::Lookup(Code* code,
                              String* name,
                              Variable::Mode* mode) {
   int index = Hash(code, name);
-  Key& key = keys_[index];
+  ContextSlotCacheData& data = v8_context()->context_slot_cache_data_;
+  ContextSlotCacheData::Key& key = data.keys_[index];
   if ((key.code == code) && key.name->Equals(name)) {
-    Value result(values_[index]);
+    Value result(data.values_[index]);
     if (mode != NULL) *mode = result.mode();
     return result.index() + kNotFound;
   }
@@ -562,11 +563,12 @@ void ContextSlotCache::Update(Code* code,
   ASSERT(slot_index > kNotFound);
   if (Heap::LookupSymbolIfExists(name, &symbol)) {
     int index = Hash(code, symbol);
-    Key& key = keys_[index];
+    ContextSlotCacheData& data = v8_context()->context_slot_cache_data_;
+    ContextSlotCacheData::Key& key = data.keys_[index];
     key.code = code;
     key.name = symbol;
     // Please note value only takes a uint as index.
-    values_[index] = Value(mode, slot_index - kNotFound).raw();
+    data.values_[index] = Value(mode, slot_index - kNotFound).raw();
 #ifdef DEBUG
     ValidateEntry(code, name, mode, slot_index);
 #endif
@@ -575,15 +577,18 @@ void ContextSlotCache::Update(Code* code,
 
 
 void ContextSlotCache::Clear() {
-  for (int index = 0; index < kLength; index++) keys_[index].code = NULL;
+  ContextSlotCacheData& data = v8_context()->context_slot_cache_data_;
+  for (int index = 0; index < ContextSlotCacheData::kLength; index++)
+    data.keys_[index].code = NULL;
 }
 
-
-ContextSlotCache::Key ContextSlotCache::keys_[ContextSlotCache::kLength];
-
-
-uint32_t ContextSlotCache::values_[ContextSlotCache::kLength];
-
+ContextSlotCacheData::ContextSlotCacheData() {
+  for (int i = 0; i < ContextSlotCacheData::kLength; ++i) {
+    keys_[i].code = NULL;
+    keys_[i].name = NULL;
+    values_[i] = 0;
+  }
+}
 
 #ifdef DEBUG
 
@@ -594,10 +599,11 @@ void ContextSlotCache::ValidateEntry(Code* code,
   String* symbol;
   if (Heap::LookupSymbolIfExists(name, &symbol)) {
     int index = Hash(code, name);
-    Key& key = keys_[index];
+    ContextSlotCacheData& data = v8_context()->context_slot_cache_data_;
+    ContextSlotCacheData::Key& key = data.keys_[index];
     ASSERT(key.code == code);
     ASSERT(key.name->Equals(name));
-    Value result(values_[index]);
+    Value result(data.values_[index]);
     ASSERT(result.mode() == mode);
     ASSERT(result.index() + kNotFound == slot_index);
   }

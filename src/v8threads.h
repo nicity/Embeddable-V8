@@ -68,49 +68,8 @@ class ThreadState {
   char* data_;
   ThreadState* next_;
   ThreadState* previous_;
-
-  // In the following two lists there is always at least one object on the list.
-  // The first object is a flying anchor that is only there to simplify linking
-  // and unlinking.
-  // Head of linked list of free states.
-  static ThreadState* free_anchor_;
-  // Head of linked list of states in use.
-  static ThreadState* in_use_anchor_;
+  friend class ThreadManagerData;
 };
-
-
-class ThreadManager : public AllStatic {
- public:
-  static void Lock();
-  static void Unlock();
-
-  static void ArchiveThread();
-  static bool RestoreThread();
-  static void FreeThreadResources();
-  static bool IsArchived();
-
-  static void Iterate(ObjectVisitor* v);
-  static void MarkCompactPrologue(bool is_compacting);
-  static void MarkCompactEpilogue(bool is_compacting);
-  static bool IsLockedByCurrentThread() { return mutex_owner_.IsSelf(); }
-
-  static int CurrentId();
-  static void AssignId();
-  static bool HasId();
-
-  static void TerminateExecution(int thread_id);
-
-  static const int kInvalidId = -1;
- private:
-  static void EagerlyArchiveThread();
-
-  static int last_id_;  // V8 threads are identified through an integer.
-  static Mutex* mutex_;
-  static ThreadHandle mutex_owner_;
-  static ThreadHandle lazily_archived_thread_;
-  static ThreadState* lazily_archived_thread_state_;
-};
-
 
 // The ContextSwitcher thread is used to schedule regular preemptions to
 // multiple running V8 threads. Generally it is necessary to call
@@ -135,8 +94,65 @@ class ContextSwitcher: public Thread {
 
   bool keep_going_;
   int sleep_ms_;
+};
 
-  static ContextSwitcher* singleton_;
+class ThreadManagerData {
+  int last_id_;  // V8 threads are identified through an integer.
+  Mutex* mutex_;
+  ThreadHandle mutex_owner_;
+  ThreadHandle lazily_archived_thread_;
+  ThreadState* lazily_archived_thread_state_;
+
+  // In the following two lists there is always at least one object on the list.
+  // The first object is a flying anchor that is only there to simplify linking
+  // and unlinking.
+  // Head of linked list of free states.
+  ThreadState* free_anchor_;
+  // Head of linked list of states in use.
+  ThreadState* in_use_anchor_;
+
+  // This is the ContextSwitcher singleton. There is at most a single thread
+  // running which delivers preemption events to V8 threads.
+  ContextSwitcher* singleton_;
+
+  Thread::LocalStorageKey thread_state_key_;
+  Thread::LocalStorageKey thread_id_key_;
+
+  friend class ThreadManager;
+  friend class ThreadState;
+  friend class V8Context;
+  friend class ContextSwitcher;
+
+  ThreadManagerData();
+  DISALLOW_COPY_AND_ASSIGN(ThreadManagerData);
+};
+
+class ThreadManager : public AllStatic {
+ public:
+  static void Lock();
+  static void Unlock();
+
+  static void ArchiveThread();
+  static bool RestoreThread();
+  static void FreeThreadResources();
+  static bool IsArchived();
+
+  static void Iterate(ObjectVisitor* v);
+  static void MarkCompactPrologue(bool is_compacting);
+  static void MarkCompactEpilogue(bool is_compacting);
+  static bool IsLockedByCurrentThread() {
+    return v8_context()->thread_manager_data_.mutex_owner_.IsSelf();
+  }
+
+  static int CurrentId();
+  static void AssignId();
+  static bool HasId();
+
+  static void TerminateExecution(int thread_id);
+
+  static const int kInvalidId = -1;
+ private:
+  static void EagerlyArchiveThread();
 };
 
 } }  // namespace v8::internal

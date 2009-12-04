@@ -206,6 +206,79 @@ class DebugInfoListNode {
   DebugInfoListNode* next_;
 };
 
+class DebugData {
+ public:
+  // List of active debug info objects. public for tests
+  DebugInfoListNode* debug_info_list_;
+ private:
+  // Global handle to debug context where all the debugger JavaScript code is
+  // loaded.
+  Handle<Context> debug_context_;
+
+  // Boolean state indicating whether any break points are set.
+  bool has_break_points_;
+
+  // Cache of all scripts in the heap.
+  ScriptCache* script_cache_;
+
+  bool disable_break_;
+  bool break_on_exception_;
+  bool break_on_uncaught_exception_;
+
+  // Per-thread data.
+  class ThreadLocal {
+   public:
+    // Counter for generating next break id.
+    int break_count_;
+
+    // Current break id.
+    int break_id_;
+
+    // Frame id for the frame of the current break.
+    StackFrame::Id break_frame_id_;
+
+    // Step action for last step performed.
+    StepAction last_step_action_;
+
+    // Source statement position from last step next action.
+    int last_statement_position_;
+
+    // Number of steps left to perform before debug event.
+    int step_count_;
+
+    // Frame pointer from last step next action.
+    Address last_fp_;
+
+    // Frame pointer for frame from which step in was performed.
+    Address step_into_fp_;
+
+    // Frame pointer for the frame where debugger should be called when current
+    // step out action is completed.
+    Address step_out_fp_;
+
+    // Storage location for jump when exiting debug break calls.
+    Address after_break_target_;
+
+    // Top debugger entry.
+    EnterDebugger* debugger_entry_;
+
+    // Pending interrupts scheduled while debugging.
+    int pending_interrupts_;
+  };
+
+  // Storage location for registers when handling debug break calls
+  JSCallerSavedBuffer registers_;
+  ThreadLocal thread_local_;
+
+  // Code to call for handling debug break on return.
+  Code* debug_break_return_;
+
+  friend class Debug;
+  friend class V8Context;
+
+  DebugData();
+  DISALLOW_COPY_AND_ASSIGN(DebugData);
+};
 
 // This class contains the debugger support. The main purpose is to handle
 // setting break points in the code.
@@ -219,8 +292,12 @@ class Debug {
   static void Setup(bool create_heap_objects);
   static bool Load();
   static void Unload();
-  static bool IsLoaded() { return !debug_context_.is_null(); }
-  static bool InDebugger() { return thread_local_.debugger_entry_ != NULL; }
+  static bool IsLoaded() {
+    return !v8_context()->debug_data_.debug_context_.is_null();
+  }
+  static bool InDebugger() {
+    return v8_context()->debug_data_.thread_local_.debugger_entry_ != NULL;
+  }
   static void PreemptionWhileInDebugger();
   static void Iterate(ObjectVisitor* v);
 
@@ -261,64 +338,86 @@ class Debug {
       Handle<SharedFunctionInfo> shared);
 
   // Getter for the debug_context.
-  inline static Handle<Context> debug_context() { return debug_context_; }
+  inline static Handle<Context> debug_context() {
+    return v8_context()->debug_data_.debug_context_;
+  }
 
   // Check whether a global object is the debug global object.
   static bool IsDebugGlobal(GlobalObject* global);
 
   // Fast check to see if any break points are active.
-  inline static bool has_break_points() { return has_break_points_; }
+  inline static bool has_break_points() {
+    return v8_context()->debug_data_.has_break_points_;
+  }
 
   static void NewBreak(StackFrame::Id break_frame_id);
   static void SetBreak(StackFrame::Id break_frame_id, int break_id);
   static StackFrame::Id break_frame_id() {
-    return thread_local_.break_frame_id_;
+    return v8_context()->debug_data_.thread_local_.break_frame_id_;
   }
-  static int break_id() { return thread_local_.break_id_; }
+  static int break_id() {
+    return v8_context()->debug_data_.thread_local_.break_id_;
+  }
 
-  static bool StepInActive() { return thread_local_.step_into_fp_ != 0; }
+  static bool StepInActive() {
+    return v8_context()->debug_data_.thread_local_.step_into_fp_ != 0;
+  }
   static void HandleStepIn(Handle<JSFunction> function,
                            Handle<Object> holder,
                            Address fp,
                            bool is_constructor);
-  static Address step_in_fp() { return thread_local_.step_into_fp_; }
-  static Address* step_in_fp_addr() { return &thread_local_.step_into_fp_; }
+  static Address step_in_fp() {
+    return v8_context()->debug_data_.thread_local_.step_into_fp_;
+  }
+  static Address* step_in_fp_addr() {
+    return &v8_context()->debug_data_.thread_local_.step_into_fp_;
+  }
 
-  static bool StepOutActive() { return thread_local_.step_out_fp_ != 0; }
-  static Address step_out_fp() { return thread_local_.step_out_fp_; }
+  static bool StepOutActive() {
+    return v8_context()->debug_data_.thread_local_.step_out_fp_ != 0;
+  }
+  static Address step_out_fp() {
+    return v8_context()->debug_data_.thread_local_.step_out_fp_;
+  }
 
   static EnterDebugger* debugger_entry() {
-    return thread_local_.debugger_entry_;
+    return v8_context()->debug_data_.thread_local_.debugger_entry_;
   }
   static void set_debugger_entry(EnterDebugger* entry) {
-    thread_local_.debugger_entry_ = entry;
+    v8_context()->debug_data_.thread_local_.debugger_entry_ = entry;
   }
 
   // Check whether any of the specified interrupts are pending.
   static bool is_interrupt_pending(InterruptFlag what) {
-    return (thread_local_.pending_interrupts_ & what) != 0;
+    return (v8_context()->debug_data_.thread_local_.pending_interrupts_ &
+      what) != 0;
   }
 
   // Set specified interrupts as pending.
   static void set_interrupts_pending(InterruptFlag what) {
-    thread_local_.pending_interrupts_ |= what;
+    v8_context()->debug_data_.thread_local_.pending_interrupts_ |= what;
   }
 
   // Clear specified interrupts from pending.
   static void clear_interrupt_pending(InterruptFlag what) {
-    thread_local_.pending_interrupts_ &= ~static_cast<int>(what);
+    v8_context()->debug_data_.thread_local_.pending_interrupts_ &=
+      ~static_cast<int>(what);
   }
 
   // Getter and setter for the disable break state.
-  static bool disable_break() { return disable_break_; }
+  static bool disable_break() {
+    return v8_context()->debug_data_.disable_break_;
+  }
   static void set_disable_break(bool disable_break) {
-    disable_break_ = disable_break;
+    v8_context()->debug_data_.disable_break_ = disable_break;
   }
 
   // Getters for the current exception break state.
-  static bool break_on_exception() { return break_on_exception_; }
+  static bool break_on_exception() {
+    return v8_context()->debug_data_.break_on_exception_;
+  }
   static bool break_on_uncaught_exception() {
-    return break_on_uncaught_exception_;
+    return v8_context()->debug_data_.break_on_uncaught_exception_;
   }
 
   enum AddressId {
@@ -329,18 +428,21 @@ class Debug {
 
   // Support for setting the address to jump to when returning from break point.
   static Address* after_break_target_address() {
-    return reinterpret_cast<Address*>(&thread_local_.after_break_target_);
+    return reinterpret_cast<Address*>(
+      &v8_context()->debug_data_.thread_local_.after_break_target_);
   }
 
   // Support for saving/restoring registers when handling debug break calls.
   static Object** register_address(int r) {
-    return &registers_[r];
+    return &v8_context()->debug_data_.registers_[r];
   }
 
   // Access to the debug break on return code.
-  static Code* debug_break_return() { return debug_break_return_; }
+  static Code* debug_break_return() {
+    return v8_context()->debug_data_.debug_break_return_;
+  }
   static Code** debug_break_return_address() {
-    return &debug_break_return_;
+    return &v8_context()->debug_data_.debug_break_return_;
   }
 
   static const int kEstimatedNofDebugInfoEntries = 16;
@@ -397,71 +499,8 @@ class Debug {
   static Handle<Object> CheckBreakPoints(Handle<Object> break_point);
   static bool CheckBreakPoint(Handle<Object> break_point_object);
 
-  // Global handle to debug context where all the debugger JavaScript code is
-  // loaded.
-  static Handle<Context> debug_context_;
-
-  // Boolean state indicating whether any break points are set.
-  static bool has_break_points_;
-
-  // Cache of all scripts in the heap.
-  static ScriptCache* script_cache_;
-
-  // List of active debug info objects.
-  static DebugInfoListNode* debug_info_list_;
-
-  static bool disable_break_;
-  static bool break_on_exception_;
-  static bool break_on_uncaught_exception_;
-
-  // Per-thread data.
-  class ThreadLocal {
-   public:
-    // Counter for generating next break id.
-    int break_count_;
-
-    // Current break id.
-    int break_id_;
-
-    // Frame id for the frame of the current break.
-    StackFrame::Id break_frame_id_;
-
-    // Step action for last step performed.
-    StepAction last_step_action_;
-
-    // Source statement position from last step next action.
-    int last_statement_position_;
-
-    // Number of steps left to perform before debug event.
-    int step_count_;
-
-    // Frame pointer from last step next action.
-    Address last_fp_;
-
-    // Frame pointer for frame from which step in was performed.
-    Address step_into_fp_;
-
-    // Frame pointer for the frame where debugger should be called when current
-    // step out action is completed.
-    Address step_out_fp_;
-
-    // Storage location for jump when exiting debug break calls.
-    Address after_break_target_;
-
-    // Top debugger entry.
-    EnterDebugger* debugger_entry_;
-
-    // Pending interrupts scheduled while debugging.
-    int pending_interrupts_;
-  };
-
-  // Storage location for registers when handling debug break calls
-  static JSCallerSavedBuffer registers_;
-  static ThreadLocal thread_local_;
+  typedef DebugData::ThreadLocal ThreadLocal;
   static void ThreadInit();
-
-  // Code to call for handling debug break on return.
-  static Code* debug_break_return_;
 
   DISALLOW_COPY_AND_ASSIGN(Debug);
 };
@@ -577,6 +616,30 @@ class LockingCommandMessageQueue BASE_EMBEDDED {
   DISALLOW_COPY_AND_ASSIGN(LockingCommandMessageQueue);
 };
 
+class DebuggerData {
+  Mutex* debugger_access_;  // Mutex guarding debugger variables.
+  Handle<Object> event_listener_;  // Global handle to listener.
+  Handle<Object> event_listener_data_;
+  bool compiling_natives_;  // Are we compiling natives?
+  bool is_loading_debugger_;  // Are we loading the debugger?
+  bool never_unload_debugger_;  // Can we unload the debugger?
+  v8::Debug::MessageHandler2 message_handler_;
+  bool debugger_unload_pending_;  // Was message handler cleared?
+  v8::Debug::HostDispatchHandler host_dispatch_handler_;
+  v8::Debug::DebugMessageDispatchHandler debug_message_dispatch_handler_;
+  int host_dispatch_micros_;
+
+  DebuggerAgent* agent_;
+
+  LockingCommandMessageQueue command_queue_;
+  Semaphore* command_received_;  // Signaled for each command received.
+  static const int kQueueInitialSize = 4;
+
+  friend class Debugger;
+  friend class V8Context;
+  DebuggerData();
+  DISALLOW_COPY_AND_ASSIGN(DebuggerData);
+};
 
 class Debugger {
  public:
@@ -649,45 +712,34 @@ class Debugger {
   static void UnloadDebugger();
 
   inline static bool EventActive(v8::DebugEvent event) {
-    ScopedLock with(debugger_access_);
+    DebuggerData& data = v8_context()->debugger_data_;
+    ScopedLock with(data.debugger_access_);
 
     // Check whether the message handler was been cleared.
-    if (debugger_unload_pending_) {
+    if (data.debugger_unload_pending_) {
       UnloadDebugger();
     }
 
     // Currently argument event is not used.
-    return !compiling_natives_ && Debugger::IsDebuggerActive();
+    return !data.compiling_natives_ && Debugger::IsDebuggerActive();
   }
 
   static void set_compiling_natives(bool compiling_natives) {
-    Debugger::compiling_natives_ = compiling_natives;
+    v8_context()->debugger_data_.compiling_natives_ = compiling_natives;
   }
-  static bool compiling_natives() { return Debugger::compiling_natives_; }
-  static void set_loading_debugger(bool v) { is_loading_debugger_ = v; }
-  static bool is_loading_debugger() { return Debugger::is_loading_debugger_; }
+  static bool compiling_natives() {
+    return v8_context()->debugger_data_.compiling_natives_;
+  }
+  static void set_loading_debugger(bool v) {
+    v8_context()->debugger_data_.is_loading_debugger_ = v;
+  }
+  static bool is_loading_debugger() {
+    return v8_context()->debugger_data_.is_loading_debugger_;
+  }
 
  private:
   static bool IsDebuggerActive();
   static void ListenersChanged();
-
-  static Mutex* debugger_access_;  // Mutex guarding debugger variables.
-  static Handle<Object> event_listener_;  // Global handle to listener.
-  static Handle<Object> event_listener_data_;
-  static bool compiling_natives_;  // Are we compiling natives?
-  static bool is_loading_debugger_;  // Are we loading the debugger?
-  static bool never_unload_debugger_;  // Can we unload the debugger?
-  static v8::Debug::MessageHandler2 message_handler_;
-  static bool debugger_unload_pending_;  // Was message handler cleared?
-  static v8::Debug::HostDispatchHandler host_dispatch_handler_;
-  static v8::Debug::DebugMessageDispatchHandler debug_message_dispatch_handler_;
-  static int host_dispatch_micros_;
-
-  static DebuggerAgent* agent_;
-
-  static const int kQueueInitialSize = 4;
-  static LockingCommandMessageQueue command_queue_;
-  static Semaphore* command_received_;  // Signaled for each command received.
 
   friend class EnterDebugger;
 };

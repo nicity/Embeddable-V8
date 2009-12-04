@@ -148,6 +148,23 @@ enum ExtensionTraversalState {
   UNVISITED, VISITED, INSTALLED
 };
 
+class RegisteredExtension;
+
+class internal::ApiData {
+ public:
+  StringInputBuffer write_input_buffer_;
+  // To distinguish the function templates, so that we can find them in the
+  // function cache of the global context.
+  int next_serial_number_;
+
+  EmbeddedVector<char, 128> buffer_;
+
+  ApiData()
+    :next_serial_number_(0) {
+  }
+
+  DISALLOW_COPY_AND_ASSIGN(ApiData);
+};
 
 class RegisteredExtension {
  public:

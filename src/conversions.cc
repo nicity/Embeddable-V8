@@ -100,14 +100,14 @@ static inline void ReleaseCString(String* original, const char* str) {
 }
 
 
-static inline bool IsSpace(const char* str, int index) {
+static inline bool IsSpace(const char* str, int index, V8Context* v8context) {
   ASSERT(index >= 0 && index < StrLength(str));
-  return Scanner::kIsWhiteSpace.get(str[index]);
+  return v8context->scanner_data_.kIsWhiteSpace_.get(str[index]);
 }
 
 
-static inline bool IsSpace(String* str, int index) {
-  return Scanner::kIsWhiteSpace.get(str->Get(index));
+static inline bool IsSpace(String* str, int index, V8Context* v8context) {
+  return v8context->scanner_data_.kIsWhiteSpace_.get(str->Get(index));
 }
 
 
@@ -272,8 +272,9 @@ static double InternalStringToDouble(S* str,
 
   int len = GetLength(str);
 
+  V8Context* const v8context = v8_context();
   // Skip leading spaces.
-  while ((index < len) && IsSpace(str, index)) index++;
+  while ((index < len) && IsSpace(str, index, v8context)) index++;
 
   // Is the string empty?
   if (index >= len) return empty_string_val;
@@ -334,7 +335,7 @@ static double InternalStringToDouble(S* str,
 
   if ((flags & ALLOW_TRAILING_JUNK) == 0) {
     // skip trailing spaces
-    while ((index < len) && IsSpace(str, index)) index++;
+    while ((index < len) && IsSpace(str, index, v8context)) index++;
     // string ending with junk?
     if (index < len) return JUNK_STRING_VALUE;
   }
@@ -352,6 +353,7 @@ double StringToDouble(const char* str, int flags, double empty_string_val) {
   return InternalStringToDouble(str, flags, empty_string_val);
 }
 
+static MutexLockAdapter mutex_lock(OS::CreateMutex());
 
 extern "C" char* dtoa(double d, int mode, int ndigits,
                       int* decpt, int* sign, char** rve);
@@ -381,7 +383,7 @@ const char* DoubleToCString(double v, Vector<char> buffer) {
     default: {
       int decimal_point;
       int sign;
-
+      V8SharedStateLocker dtoa_locker(&mutex_lock);
       char* decimal_rep = dtoa(v, 0, 0, &decimal_point, &sign, NULL);
       int length = StrLength(decimal_rep);
 
@@ -464,6 +466,7 @@ char* DoubleToFixedCString(double value, int f) {
   // Find a sufficiently precise decimal representation of n.
   int decimal_point;
   int sign;
+  V8SharedStateLocker dtoa_locker(&mutex_lock);
   char* decimal_rep = dtoa(abs_value, 3, f, &decimal_point, &sign, NULL);
   int decimal_rep_length = StrLength(decimal_rep);
 
@@ -552,6 +555,7 @@ char* DoubleToExponentialCString(double value, int f) {
   int decimal_point;
   int sign;
   char* decimal_rep = NULL;
+  V8SharedStateLocker dtoa_locker(&mutex_lock);
   if (f == -1) {
     decimal_rep = dtoa(value, 0, 0, &decimal_point, &sign, NULL);
     f = StrLength(decimal_rep) - 1;
@@ -585,6 +589,7 @@ char* DoubleToPrecisionCString(double value, int p) {
   // Find a sufficiently precise decimal representation of n.
   int decimal_point;
   int sign;
+  V8SharedStateLocker dtoa_locker(&mutex_lock);
   char* decimal_rep = dtoa(value, 2, p, &decimal_point, &sign, NULL);
   int decimal_rep_length = StrLength(decimal_rep);
   ASSERT(decimal_rep_length <= p);

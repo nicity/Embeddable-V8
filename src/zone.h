@@ -85,14 +85,6 @@ class Zone {
   // Never keep segments larger than this size in bytes around.
   static const int kMaximumKeptSegmentSize = 64 * KB;
 
-  // Report zone excess when allocation exceeds this limit.
-  static int zone_excess_limit_;
-
-  // The number of bytes allocated in segments.  Note that this number
-  // includes memory allocated from the OS but not yet allocated from
-  // the zone.
-  static int segment_bytes_allocated_;
-
   // The Zone is intentionally a singleton; you should not try to
   // allocate instances of the class.
   Zone() { UNREACHABLE(); }
@@ -103,15 +95,41 @@ class Zone {
   // memory in the Zone. Should only be called if there isn't enough
   // room in the Zone already.
   static Address NewExpand(int size);
+};
 
+class Segment;
+class ZoneData {
+  friend class Zone;
+
+  // Report zone excess when allocation exceeds this limit.
+  int zone_excess_limit_;
+
+  // The number of bytes allocated in segments.  Note that this number
+  // includes memory allocated from the OS but not yet allocated from
+  // the zone.
+  int segment_bytes_allocated_;
 
   // The free region in the current (front) segment is represented as
   // the half-open interval [position, limit). The 'position' variable
   // is guaranteed to be aligned as dictated by kAlignment.
-  static Address position_;
-  static Address limit_;
-};
+  Address position_;
+  Address limit_;
 
+  Segment* head_;
+  int bytes_allocated_;
+  int nesting_;
+  bool allow_allocation_;
+
+  ZoneData();
+
+  friend class V8Context;
+  friend class ZoneScope;
+  friend class AssertNoZoneAllocation;
+  friend class Zone;
+  friend class Segment;
+
+  DISALLOW_COPY_AND_ASSIGN(ZoneData);
+};
 
 // ZoneObject is an abstraction that helps define classes of objects
 // allocated in the Zone. Use it as a base class; see ast.h.
@@ -134,16 +152,20 @@ class ZoneObject {
 
 class AssertNoZoneAllocation {
  public:
-  AssertNoZoneAllocation() : prev_(allow_allocation_) {
-    allow_allocation_ = false;
+  AssertNoZoneAllocation() {
+    V8Context* const v8context = v8_context();
+    prev_ = v8context->zone_data_.allow_allocation_;
+    v8context->zone_data_.allow_allocation_ = false;
   }
-  ~AssertNoZoneAllocation() { allow_allocation_ = prev_; }
-  static bool allow_allocation() { return allow_allocation_; }
+  ~AssertNoZoneAllocation() {
+    v8_context()->zone_data_.allow_allocation_ = prev_;
+  }
+  static bool allow_allocation(const ZoneData& zone_data) {
+    return zone_data.allow_allocation_;
+  }
  private:
   bool prev_;
-  static bool allow_allocation_;
 };
-
 
 // The ZoneListAllocationPolicy is used to specialize the GenericList
 // implementation to allocate ZoneLists and their elements in the
@@ -178,16 +200,16 @@ class ZoneList: public List<T, ZoneListAllocationPolicy> {
 class ZoneScope BASE_EMBEDDED {
  public:
   explicit ZoneScope(ZoneScopeMode mode) : mode_(mode) {
-    nesting_++;
+    v8_context()->zone_data_.nesting_++;
   }
 
   virtual ~ZoneScope() {
     if (ShouldDeleteOnExit()) Zone::DeleteAll();
-    --nesting_;
+    --v8_context()->zone_data_.nesting_;
   }
 
   bool ShouldDeleteOnExit() {
-    return nesting_ == 1 && mode_ == DELETE_ON_EXIT;
+    return v8_context()->zone_data_.nesting_ == 1 && mode_ == DELETE_ON_EXIT;
   }
 
   // For ZoneScopes that do not delete on exit by default, call this
@@ -196,11 +218,10 @@ class ZoneScope BASE_EMBEDDED {
     mode_ = DELETE_ON_EXIT;
   }
 
-  static int nesting() { return nesting_; }
+  static int nesting(const ZoneData& zone_data) { return zone_data.nesting_; }
 
  private:
   ZoneScopeMode mode_;
-  static int nesting_;
 };
 
 

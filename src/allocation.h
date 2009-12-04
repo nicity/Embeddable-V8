@@ -28,41 +28,10 @@
 #ifndef V8_ALLOCATION_H_
 #define V8_ALLOCATION_H_
 
+#include "v8-global-context.h"
+
 namespace v8 {
 namespace internal {
-
-
-// A class that controls whether allocation is allowed.  This is for
-// the C++ heap only!
-class NativeAllocationChecker {
- public:
-  typedef enum { ALLOW, DISALLOW } NativeAllocationAllowed;
-  explicit inline NativeAllocationChecker(NativeAllocationAllowed allowed)
-      : allowed_(allowed) {
-#ifdef DEBUG
-    if (allowed == DISALLOW) {
-      allocation_disallowed_++;
-    }
-#endif
-  }
-  ~NativeAllocationChecker() {
-#ifdef DEBUG
-    if (allowed_ == DISALLOW) {
-      allocation_disallowed_--;
-    }
-#endif
-    ASSERT(allocation_disallowed_ >= 0);
-  }
-  static inline bool allocation_allowed() {
-    return allocation_disallowed_ == 0;
-  }
- private:
-  // This static counter ensures that NativeAllocationCheckers can be nested.
-  static int allocation_disallowed_;
-  // This flag applies to this particular instance.
-  NativeAllocationAllowed allowed_;
-};
-
 
 // Superclass for classes managed with new & delete.
 class Malloced {
@@ -135,7 +104,6 @@ class FreeStoreAllocationPolicy {
   INLINE(static void Delete(void* p)) { Malloced::Delete(p); }
 };
 
-
 // Allocation policy for allocating in preallocated space.
 // Used as an allocation policy for ScopeInfo when generating
 // stack traces.
@@ -153,16 +121,65 @@ class PreallocatedStorage : public AllStatic {
   size_t size_;
   PreallocatedStorage* previous_;
   PreallocatedStorage* next_;
-  static bool preallocated_;
-
-  static PreallocatedStorage in_use_list_;
-  static PreallocatedStorage free_list_;
 
   void LinkTo(PreallocatedStorage* other);
   void Unlink();
   DISALLOW_IMPLICIT_CONSTRUCTORS(PreallocatedStorage);
 };
 
+class StorageData {
+ private:
+  // This static counter ensures that NativeAllocationCheckers can be nested.
+  int allocation_disallowed_;
+  bool preallocated_;
+
+  PreallocatedStorage in_use_list_;
+  PreallocatedStorage free_list_;
+  #ifdef DEBUG
+   private:
+    bool rset_used_;  // state of the remembered set
+  #endif
+
+  StorageData();
+  friend class V8Context;
+  friend class PreallocatedStorage;
+  friend class NativeAllocationChecker;
+  friend class Page;
+  DISALLOW_COPY_AND_ASSIGN(StorageData);
+};
+
+// A class that controls whether allocation is allowed.  This is for
+// the C++ heap only!
+class NativeAllocationChecker {
+ public:
+  typedef enum { ALLOW, DISALLOW } NativeAllocationAllowed;
+  explicit inline NativeAllocationChecker(NativeAllocationAllowed allowed)
+      : allowed_(allowed) {
+#ifdef DEBUG
+    if (allowed == DISALLOW) {
+      v8_context()->storage_data_.allocation_disallowed_++;
+    }
+#endif
+  }
+  ~NativeAllocationChecker() {
+#ifdef DEBUG
+    if (allowed_ == DISALLOW) {
+      v8_context()->storage_data_.allocation_disallowed_--;
+    }
+#endif
+    ASSERT(v8_context()->storage_data_.allocation_disallowed_ >= 0);
+  }
+  static inline bool allocation_allowed() {
+    V8Context * const v8context = v8_context();
+    return v8context ?
+      v8context->storage_data_.allocation_disallowed_ == 0: true;
+  }
+ private:
+  // This static counter ensures that NativeAllocationCheckers can be nested.
+  static int allocation_disallowed_;
+  // This flag applies to this particular instance.
+  NativeAllocationAllowed allowed_;
+};
 
 } }  // namespace v8::internal
 

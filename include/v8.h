@@ -132,6 +132,7 @@ namespace internal {
 class Arguments;
 class Object;
 class Top;
+class V8Context;
 
 }
 
@@ -2761,13 +2762,11 @@ class V8EXPORT Locker {
   /**
    * Returns whether v8::Locker is being used by this V8 instance.
    */
-  static bool IsActive() { return active_; }
+  static bool IsActive();
 
  private:
   bool has_lock_;
   bool top_level_;
-
-  static bool active_;
 
   // Disallow copying and assigning.
   Locker(const Locker&);
@@ -3205,6 +3204,58 @@ Local<Object> AccessorInfo::Holder() const {
   return Local<Object>(reinterpret_cast<Object*>(&args_[-1]));
 }
 
+
+/**
+ * Encapsulates V8 instance
+ */
+class V8EXPORT V8ContextProvider {
+ public:
+  V8ContextProvider();
+  ~V8ContextProvider();
+
+  operator internal::V8Context*() const {
+    return v8context_;
+  }
+ private:
+  V8ContextProvider(const V8ContextProvider&);
+  void operator=(const V8ContextProvider&);
+  void* operator new(size_t size);
+  void operator delete(void*, size_t);
+
+  internal::V8Context* const v8context_;
+  friend class V8ContextBinder;
+};
+
+/**
+ * Manages binding of V8 instance (from V8ContextProvider) to current thread
+ *
+ * V8ContextProvider context_provider;
+ * ...
+ * V8ContextBinder context_binder(context_provider);
+ */
+class V8EXPORT V8ContextBinder {
+ public:
+  V8ContextBinder(internal::V8Context*, bool bind_default = false);
+  ~V8ContextBinder();
+ private:
+  V8ContextBinder(const V8ContextBinder&);
+  void operator=(const V8ContextBinder&);
+  void* operator new(size_t size);
+  void operator delete(void*, size_t);
+
+  internal::V8Context* const v8context_;
+  bool bound_default_;
+};
+
+/**
+ * Allocated statically, implies intent of V8 host to have several instances
+ * of V8 in process
+ */
+class V8EXPORT AllowSeveralV8InstancesInProcess {
+ public:
+  AllowSeveralV8InstancesInProcess();
+  ~AllowSeveralV8InstancesInProcess();
+};
 
 /**
  * \example shell.cc

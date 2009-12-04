@@ -208,8 +208,12 @@ class Page {
   // Use a state to mark whether remembered set space can be used for other
   // purposes.
   enum RSetState { IN_USE,  NOT_IN_USE };
-  static bool is_rset_in_use() { return rset_state_ == IN_USE; }
-  static void set_rset_state(RSetState state) { rset_state_ = state; }
+  static bool is_rset_in_use() {
+    return v8_context()->storage_data_.rset_used_;
+  }
+  static void set_rset_state(RSetState state) {
+    v8_context()->storage_data_.rset_used_ = state == IN_USE;
+  }
 #endif
 
   // 8K bytes per page.
@@ -313,6 +317,36 @@ class Space : public Malloced {
   Executability executable_;
 };
 
+class CodeRangeData {
+  // Plain old data class, just a struct plus a constructor.
+  class FreeBlock {
+   public:
+    FreeBlock(Address start_arg, size_t size_arg)
+        : start(start_arg), size(size_arg) {}
+    FreeBlock(void* start_arg, size_t size_arg)
+        : start(static_cast<Address>(start_arg)), size(size_arg) {}
+
+    Address start;
+    size_t size;
+  };
+
+  // The reserved range of virtual memory that all code objects are put in.
+  VirtualMemory* code_range_;
+  // Freed blocks of memory are added to the free list.  When the allocation
+  // list is exhausted, the free list is sorted and merged to make the new
+  // allocation list.
+  List<FreeBlock> free_list_;
+  // Memory is allocated from the free blocks on the allocation list.
+  // The block at current_allocation_block_index_ is the current block.
+  List<FreeBlock> allocation_list_;
+  int current_allocation_block_index_;
+
+  CodeRangeData();
+
+  friend class V8Context;
+  friend class CodeRange;
+  DISALLOW_COPY_AND_ASSIGN(CodeRangeData);
+};
 
 // ----------------------------------------------------------------------------
 // All heap objects containing executable code (code objects) must be allocated
@@ -332,11 +366,14 @@ class CodeRange : public AllStatic {
   // manage it.
   static void TearDown();
 
-  static bool exists() { return code_range_ != NULL; }
+  static bool exists() {
+    return v8_context()->code_range_data_.code_range_ != NULL;
+  }
   static bool contains(Address address) {
-    if (code_range_ == NULL) return false;
-    Address start = static_cast<Address>(code_range_->address());
-    return start <= address && address < start + code_range_->size();
+    CodeRangeData& data = v8_context()->code_range_data_;
+    if (data.code_range_ == NULL) return false;
+    Address start = static_cast<Address>(data.code_range_->address());
+    return start <= address && address < start + data.code_range_->size();
   }
 
   // Allocates a chunk of memory from the large-object portion of
@@ -346,39 +383,57 @@ class CodeRange : public AllStatic {
   static void FreeRawMemory(void* buf, size_t length);
 
  private:
-  // The reserved range of virtual memory that all code objects are put in.
-  static VirtualMemory* code_range_;
-  // Plain old data class, just a struct plus a constructor.
-  class FreeBlock {
-   public:
-    FreeBlock(Address start_arg, size_t size_arg)
-        : start(start_arg), size(size_arg) {}
-    FreeBlock(void* start_arg, size_t size_arg)
-        : start(static_cast<Address>(start_arg)), size(size_arg) {}
-
-    Address start;
-    size_t size;
-  };
-
-  // Freed blocks of memory are added to the free list.  When the allocation
-  // list is exhausted, the free list is sorted and merged to make the new
-  // allocation list.
-  static List<FreeBlock> free_list_;
-  // Memory is allocated from the free blocks on the allocation list.
-  // The block at current_allocation_block_index_ is the current block.
-  static List<FreeBlock> allocation_list_;
-  static int current_allocation_block_index_;
-
   // Finds a block on the allocation list that contains at least the
   // requested amount of memory.  If none is found, sorts and merges
   // the existing free memory blocks, and searches again.
   // If none can be found, terminates V8 with FatalProcessOutOfMemory.
   static void GetNextAllocationBlock(size_t requested);
   // Compares the start addresses of two free blocks.
-  static int CompareFreeBlockAddress(const FreeBlock* left,
-                                     const FreeBlock* right);
+  static int CompareFreeBlockAddress(const CodeRangeData::FreeBlock* left,
+                                     const CodeRangeData::FreeBlock* right);
 };
 
+class MemoryAllocatorData {
+  // Allocated chunk info: chunk start address, chunk size, and owning space.
+  class ChunkInfo BASE_EMBEDDED {
+   public:
+    ChunkInfo() : address_(NULL), size_(0), owner_(NULL) {}
+    void init(Address a, size_t s, PagedSpace* o) {
+      address_ = a;
+      size_ = s;
+      owner_ = o;
+    }
+    Address address() { return address_; }
+    size_t size() { return size_; }
+    PagedSpace* owner() { return owner_; }
+
+   private:
+    Address address_;
+    size_t size_;
+    PagedSpace* owner_;
+  };
+
+  // Maximum space size in bytes.
+  int capacity_;
+
+  // Allocated space size in bytes.
+  int size_;
+
+  // The initial chunk of virtual memory.
+  VirtualMemory* initial_chunk_;
+
+  // Chunks_, free_chunk_ids_ and top_ act as a stack of free chunk ids.
+  List<ChunkInfo> chunks_;
+  List<int> free_chunk_ids_;
+  int max_nof_chunks_;
+  int top_;
+
+  friend class V8Context;
+  friend class MemoryAllocator;
+
+  MemoryAllocatorData();
+  DISALLOW_COPY_AND_ASSIGN(MemoryAllocatorData);
+};
 
 // ----------------------------------------------------------------------------
 // A space acquires chunks of memory from the operating system. The memory
@@ -471,10 +526,12 @@ class MemoryAllocator : public AllStatic {
   static void FreeRawMemory(void* buf, size_t length);
 
   // Returns the maximum available bytes of heaps.
-  static int Available() { return capacity_ < size_ ? 0 : capacity_ - size_; }
+  static int Available() {
+    MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+    return data.capacity_ < data.size_ ? 0 : data.capacity_ - data.size_; }
 
   // Returns allocated spaces in bytes.
-  static int Size() { return size_; }
+  static int Size() { return v8_context()->memory_allocator_data_.size_; }
 
   // Returns maximum available bytes that the old space can have.
   static int MaxAvailable() {
@@ -525,44 +582,12 @@ class MemoryAllocator : public AllStatic {
   static const int kChunkSize = kPagesPerChunk * Page::kPageSize;
 
  private:
-  // Maximum space size in bytes.
-  static int capacity_;
-
-  // Allocated space size in bytes.
-  static int size_;
-
-  // The initial chunk of virtual memory.
-  static VirtualMemory* initial_chunk_;
-
-  // Allocated chunk info: chunk start address, chunk size, and owning space.
-  class ChunkInfo BASE_EMBEDDED {
-   public:
-    ChunkInfo() : address_(NULL), size_(0), owner_(NULL) {}
-    void init(Address a, size_t s, PagedSpace* o) {
-      address_ = a;
-      size_ = s;
-      owner_ = o;
-    }
-    Address address() { return address_; }
-    size_t size() { return size_; }
-    PagedSpace* owner() { return owner_; }
-
-   private:
-    Address address_;
-    size_t size_;
-    PagedSpace* owner_;
-  };
-
-  // Chunks_, free_chunk_ids_ and top_ act as a stack of free chunk ids.
-  static List<ChunkInfo> chunks_;
-  static List<int> free_chunk_ids_;
-  static int max_nof_chunks_;
-  static int top_;
-
   // Push/pop a free chunk id onto/from the stack.
   static void Push(int free_chunk_id);
   static int Pop();
-  static bool OutOfChunkIds() { return top_ == 0; }
+  static bool OutOfChunkIds() {
+    return v8_context()->memory_allocator_data_.top_ == 0;
+  }
 
   // Frees a chunk.
   static void DeleteChunk(int chunk_id);

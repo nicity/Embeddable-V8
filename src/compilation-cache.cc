@@ -144,20 +144,42 @@ class CompilationCacheRegExp: public CompilationSubCache {
   DISALLOW_IMPLICIT_CONSTRUCTORS(CompilationCacheRegExp);
 };
 
+class CompilationCachePrivateData {
+ public:
+  // Current enable state of the compilation cache.
+  bool enabled_;
+  CompilationCacheScript script_;
+  CompilationCacheEval eval_global_;
+  CompilationCacheEval eval_contextual_;
+  CompilationCacheRegExp reg_exp_;
+  CompilationSubCache* subcaches_[kSubCacheCount];
 
-// Statically allocate all the sub-caches.
-static CompilationCacheScript script(kScriptGenerations);
-static CompilationCacheEval eval_global(kEvalGlobalGenerations);
-static CompilationCacheEval eval_contextual(kEvalContextualGenerations);
-static CompilationCacheRegExp reg_exp(kRegExpGenerations);
-static CompilationSubCache* subcaches[kSubCacheCount] =
-    {&script, &eval_global, &eval_contextual, &reg_exp};
+  CompilationCachePrivateData()
+    : enabled_(true),
+    script_(kScriptGenerations),
+    eval_global_(kEvalGlobalGenerations),
+    eval_contextual_(kEvalContextualGenerations),
+    reg_exp_(kRegExpGenerations) {
+    CompilationSubCache* subcaches[kSubCacheCount] =
+      {&script_, &eval_global_, &eval_contextual_, &reg_exp_};
 
+    for (int i = 0; i < kSubCacheCount; ++i) {
+      subcaches_[i] = subcaches[i];
+    }
+  }
+};
 
-// Current enable state of the compilation cache.
-static bool enabled = true;
+CompilationCacheData::CompilationCacheData()
+  :private_data_(*new CompilationCachePrivateData()) {
+}
+
+CompilationCacheData::~CompilationCacheData() {
+  delete &private_data_;
+}
+
 static inline bool IsEnabled() {
-  return FLAG_compilation_cache && enabled;
+  return FLAG_compilation_cache &&
+    v8_context()->compilation_cache_data_.private_data_.enabled_;
 }
 
 
@@ -278,10 +300,10 @@ Handle<JSFunction> CompilationCacheScript::Lookup(Handle<String> source,
     // If the script was found in a later generation, we promote it to
     // the first generation to let it survive longer in the cache.
     if (generation != 0) Put(source, boilerplate);
-    Counters::compilation_cache_hits.Increment();
+    INC_COUNTER(compilation_cache_hits);
     return boilerplate;
   } else {
-    Counters::compilation_cache_misses.Increment();
+    INC_COUNTER(compilation_cache_misses);
     return Handle<JSFunction>::null();
   }
 }
@@ -317,10 +339,10 @@ Handle<JSFunction> CompilationCacheEval::Lookup(Handle<String> source,
     if (generation != 0) {
       Put(source, context, boilerplate);
     }
-    Counters::compilation_cache_hits.Increment();
+    INC_COUNTER(compilation_cache_hits);
     return boilerplate;
   } else {
-    Counters::compilation_cache_misses.Increment();
+    INC_COUNTER(compilation_cache_misses);
     return Handle<JSFunction>::null();
   }
 }
@@ -357,10 +379,10 @@ Handle<FixedArray> CompilationCacheRegExp::Lookup(Handle<String> source,
     if (generation != 0) {
       Put(source, flags, data);
     }
-    Counters::compilation_cache_hits.Increment();
+    INC_COUNTER(compilation_cache_hits);
     return data;
   } else {
-    Counters::compilation_cache_misses.Increment();
+    INC_COUNTER(compilation_cache_misses);
     return Handle<FixedArray>::null();
   }
 }
@@ -383,7 +405,8 @@ Handle<JSFunction> CompilationCache::LookupScript(Handle<String> source,
     return Handle<JSFunction>::null();
   }
 
-  return script.Lookup(source, name, line_offset, column_offset);
+  return v8_context()->compilation_cache_data_.private_data_.
+    script_.Lookup(source, name, line_offset, column_offset);
 }
 
 
@@ -396,9 +419,11 @@ Handle<JSFunction> CompilationCache::LookupEval(Handle<String> source,
 
   Handle<JSFunction> result;
   if (is_global) {
-    result = eval_global.Lookup(source, context);
+    result = v8_context()->compilation_cache_data_.private_data_.
+      eval_global_.Lookup(source, context);
   } else {
-    result = eval_contextual.Lookup(source, context);
+    result = v8_context()->compilation_cache_data_.private_data_.
+      eval_contextual_.Lookup(source, context);
   }
   return result;
 }
@@ -410,7 +435,8 @@ Handle<FixedArray> CompilationCache::LookupRegExp(Handle<String> source,
     return Handle<FixedArray>::null();
   }
 
-  return reg_exp.Lookup(source, flags);
+  return v8_context()->compilation_cache_data_.private_data_.
+    reg_exp_.Lookup(source, flags);
 }
 
 
@@ -421,7 +447,8 @@ void CompilationCache::PutScript(Handle<String> source,
   }
 
   ASSERT(boilerplate->IsBoilerplate());
-  script.Put(source, boilerplate);
+  v8_context()->compilation_cache_data_.private_data_.
+    script_.Put(source, boilerplate);
 }
 
 
@@ -436,9 +463,11 @@ void CompilationCache::PutEval(Handle<String> source,
   HandleScope scope;
   ASSERT(boilerplate->IsBoilerplate());
   if (is_global) {
-    eval_global.Put(source, context, boilerplate);
+    v8_context()->compilation_cache_data_.private_data_.
+      eval_global_.Put(source, context, boilerplate);
   } else {
-    eval_contextual.Put(source, context, boilerplate);
+    v8_context()->compilation_cache_data_.private_data_.
+      eval_contextual_.Put(source, context, boilerplate);
   }
 }
 
@@ -451,38 +480,45 @@ void CompilationCache::PutRegExp(Handle<String> source,
     return;
   }
 
-  reg_exp.Put(source, flags, data);
+  v8_context()->compilation_cache_data_.private_data_.
+    reg_exp_.Put(source, flags, data);
 }
 
 
 void CompilationCache::Clear() {
+  CompilationCachePrivateData& data =
+    v8_context()->compilation_cache_data_.private_data_;
   for (int i = 0; i < kSubCacheCount; i++) {
-    subcaches[i]->Clear();
+    data.subcaches_[i]->Clear();
   }
 }
 
 
 void CompilationCache::Iterate(ObjectVisitor* v) {
+  CompilationCachePrivateData& data =
+    v8_context()->compilation_cache_data_.private_data_;
   for (int i = 0; i < kSubCacheCount; i++) {
-    subcaches[i]->Iterate(v);
+    data.subcaches_[i]->Iterate(v);
   }
 }
 
 
 void CompilationCache::MarkCompactPrologue() {
+  CompilationCachePrivateData& data =
+    v8_context()->compilation_cache_data_.private_data_;
   for (int i = 0; i < kSubCacheCount; i++) {
-    subcaches[i]->Age();
+    data.subcaches_[i]->Age();
   }
 }
 
 
 void CompilationCache::Enable() {
-  enabled = true;
+  v8_context()->compilation_cache_data_.private_data_.enabled_ = true;
 }
 
 
 void CompilationCache::Disable() {
-  enabled = false;
+  v8_context()->compilation_cache_data_.private_data_.enabled_ = false;
   Clear();
 }
 

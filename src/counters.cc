@@ -33,9 +33,11 @@
 namespace v8 {
 namespace internal {
 
-CounterLookupCallback StatsTable::lookup_function_ = NULL;
-CreateHistogramCallback StatsTable::create_histogram_function_ = NULL;
-AddHistogramSampleCallback StatsTable::add_histogram_sample_function_ = NULL;
+StatsTableData::StatsTableData()
+  :lookup_function_(NULL),
+  create_histogram_function_(NULL),
+  add_histogram_sample_function_(NULL) {
+}
 
 // Start the timer.
 void StatsCounterTimer::Start() {

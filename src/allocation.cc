@@ -53,7 +53,7 @@ void Malloced::FatalProcessOutOfMemory() {
 
 #ifdef DEBUG
 
-static void* invalid = static_cast<void*>(NULL);
+static void* const invalid = static_cast<void*>(NULL);
 
 void* Embedded::operator new(size_t size) {
   UNREACHABLE();
@@ -97,16 +97,20 @@ char* StrNDup(const char* str, int n) {
   return result;
 }
 
-
-int NativeAllocationChecker::allocation_disallowed_ = 0;
-
-
-PreallocatedStorage PreallocatedStorage::in_use_list_(0);
-PreallocatedStorage PreallocatedStorage::free_list_(0);
-bool PreallocatedStorage::preallocated_ = false;
+StorageData::StorageData()
+  :in_use_list_(0),
+  free_list_(0),
+  preallocated_(false),
+  #ifdef DEBUG
+  rset_used_(true),
+  #endif
+  allocation_disallowed_(0) {
+}
 
 
 void PreallocatedStorage::Init(size_t size) {
+  StorageData& storage_data = v8_context()->storage_data_;
+  PreallocatedStorage & free_list_ = storage_data.free_list_;
   ASSERT(free_list_.next_ == &free_list_);
   ASSERT(free_list_.previous_ == &free_list_);
   PreallocatedStorage* free_chunk =
@@ -114,14 +118,20 @@ void PreallocatedStorage::Init(size_t size) {
   free_list_.next_ = free_list_.previous_ = free_chunk;
   free_chunk->next_ = free_chunk->previous_ = &free_list_;
   free_chunk->size_ = size - sizeof(PreallocatedStorage);
-  preallocated_ = true;
+  storage_data.preallocated_ = true;
 }
 
 
 void* PreallocatedStorage::New(size_t size) {
-  if (!preallocated_) {
+  StorageData& storage_data = v8_context()->storage_data_;
+
+  if (!storage_data.preallocated_) {
     return FreeStoreAllocationPolicy::New(size);
   }
+
+  PreallocatedStorage & free_list_ = storage_data.free_list_;
+  PreallocatedStorage & in_use_list_ = storage_data.in_use_list_;
+
   ASSERT(free_list_.next_ != &free_list_);
   ASSERT(free_list_.previous_ != &free_list_);
   size = (size + kPointerSize - 1) & ~(kPointerSize - 1);
@@ -164,7 +174,8 @@ void PreallocatedStorage::Delete(void* p) {
   if (p == NULL) {
     return;
   }
-  if (!preallocated_) {
+  StorageData& storage_data = v8_context()->storage_data_;
+  if (!storage_data.preallocated_) {
     FreeStoreAllocationPolicy::Delete(p);
     return;
   }
@@ -172,7 +183,7 @@ void PreallocatedStorage::Delete(void* p) {
   ASSERT(storage->next_->previous_ == storage);
   ASSERT(storage->previous_->next_ == storage);
   storage->Unlink();
-  storage->LinkTo(&free_list_);
+  storage->LinkTo(&storage_data.free_list_);
 }
 
 

@@ -98,6 +98,7 @@ SOURCES = {
     usage-analyzer.cc
     utils.cc
     v8-counters.cc
+    v8-global-context.cc
     v8.cc
     v8threads.cc
     variables.cc

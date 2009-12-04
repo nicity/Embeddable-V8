@@ -370,7 +370,8 @@ namespace internal {
 
 // Collect the currently debugged functions.
 Handle<FixedArray> GetDebuggedFunctions() {
-  v8::internal::DebugInfoListNode* node = Debug::debug_info_list_;
+  v8::internal::DebugInfoListNode* node =
+    v8_context()->debug_data_.debug_info_list_;
 
   // Find the number of debugged functions.
   int count = 0;
@@ -405,7 +406,7 @@ void CheckDebuggerUnloaded(bool check_functions) {
   // Check that the debugger context is cleared and that there is no debug
   // information stored for the debugger.
   CHECK(Debug::debug_context().is_null());
-  CHECK_EQ(NULL, Debug::debug_info_list_);
+  CHECK_EQ(NULL, v8_context()->debug_data_.debug_info_list_);
 
   // Collect garbage to ensure weak handles are cleared.
   Heap::CollectAllGarbage(false);

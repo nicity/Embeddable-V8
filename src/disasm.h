@@ -28,6 +28,8 @@
 #ifndef V8_DISASM_H_
 #define V8_DISASM_H_
 
+#include "v8-global-context.h"
+
 namespace disasm {
 
 typedef unsigned char byte;
@@ -70,6 +72,12 @@ class Disassembler {
   const NameConverter& converter_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Disassembler);
+};
+
+class DisassemblerData {
+ public:
+  v8::internal::EmbeddedVector<char, 128> buffer_;
+  v8::internal::EmbeddedVector<char, 32> tmp_buffer_;
 };
 
 }  // namespace disasm

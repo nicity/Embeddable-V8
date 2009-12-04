@@ -38,38 +38,15 @@ namespace internal {
 
 // -------------------------------------------------------------------------
 // MarkCompactCollector
-
-bool MarkCompactCollector::force_compaction_ = false;
-bool MarkCompactCollector::compacting_collection_ = false;
-bool MarkCompactCollector::compact_on_next_gc_ = false;
-
-int MarkCompactCollector::previous_marked_count_ = 0;
-GCTracer* MarkCompactCollector::tracer_ = NULL;
-
-
-#ifdef DEBUG
-MarkCompactCollector::CollectorState MarkCompactCollector::state_ = IDLE;
-
-// Counters used for debugging the marking phase of mark-compact or mark-sweep
-// collection.
-int MarkCompactCollector::live_bytes_ = 0;
-int MarkCompactCollector::live_young_objects_ = 0;
-int MarkCompactCollector::live_old_data_objects_ = 0;
-int MarkCompactCollector::live_old_pointer_objects_ = 0;
-int MarkCompactCollector::live_code_objects_ = 0;
-int MarkCompactCollector::live_map_objects_ = 0;
-int MarkCompactCollector::live_cell_objects_ = 0;
-int MarkCompactCollector::live_lo_objects_ = 0;
-#endif
-
 void MarkCompactCollector::CollectGarbage() {
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
   // Make sure that Prepare() has been called. The individual steps below will
   // update the state as they proceed.
-  ASSERT(state_ == PREPARE_GC);
+  ASSERT(data.state_ == MarkCompactCollectorData::PREPARE_GC);
 
   // Prepare has selected whether to compact the old generation or not.
   // Tell the tracer.
-  if (IsCompacting()) tracer_->set_is_compacting();
+  if (IsCompacting()) data.tracer_->set_is_compacting();
 
   MarkLiveObjects();
 
@@ -94,32 +71,33 @@ void MarkCompactCollector::CollectGarbage() {
 
   // Save the count of marked objects remaining after the collection and
   // null out the GC tracer.
-  previous_marked_count_ = tracer_->marked_count();
-  ASSERT(previous_marked_count_ == 0);
-  tracer_ = NULL;
+  data.previous_marked_count_ = data.tracer_->marked_count();
+  ASSERT(data.previous_marked_count_ == 0);
+  data.tracer_ = NULL;
 }
 
 
 void MarkCompactCollector::Prepare(GCTracer* tracer) {
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
   // Rather than passing the tracer around we stash it in a static member
   // variable.
-  tracer_ = tracer;
+  data.tracer_ = tracer;
 
 #ifdef DEBUG
-  ASSERT(state_ == IDLE);
-  state_ = PREPARE_GC;
+  ASSERT(data.state_ == MarkCompactCollectorData::IDLE);
+  data.state_ = MarkCompactCollectorData::PREPARE_GC;
 #endif
   ASSERT(!FLAG_always_compact || !FLAG_never_compact);
 
-  compacting_collection_ =
-      FLAG_always_compact || force_compaction_ || compact_on_next_gc_;
-  compact_on_next_gc_ = false;
+  data.compacting_collection_ =
+      FLAG_always_compact || data.force_compaction_ || data.compact_on_next_gc_;
+  data.compact_on_next_gc_ = false;
 
-  if (FLAG_never_compact) compacting_collection_ = false;
+  if (FLAG_never_compact) data.compacting_collection_ = false;
   if (FLAG_collect_maps) CreateBackPointers();
 
 #ifdef DEBUG
-  if (compacting_collection_) {
+  if (data.compacting_collection_) {
     // We will write bookkeeping information to the remembered set area
     // starting now.
     Page::set_rset_state(Page::NOT_IN_USE);
@@ -128,26 +106,28 @@ void MarkCompactCollector::Prepare(GCTracer* tracer) {
 
   PagedSpaces spaces;
   while (PagedSpace* space = spaces.next()) {
-    space->PrepareForMarkCompact(compacting_collection_);
+    space->PrepareForMarkCompact(data.compacting_collection_);
   }
 
 #ifdef DEBUG
-  live_bytes_ = 0;
-  live_young_objects_ = 0;
-  live_old_pointer_objects_ = 0;
-  live_old_data_objects_ = 0;
-  live_code_objects_ = 0;
-  live_map_objects_ = 0;
-  live_cell_objects_ = 0;
-  live_lo_objects_ = 0;
+  data.live_bytes_ = 0;
+  data.live_young_objects_ = 0;
+  data.live_old_pointer_objects_ = 0;
+  data.live_old_data_objects_ = 0;
+  data.live_code_objects_ = 0;
+  data.live_map_objects_ = 0;
+  data.live_cell_objects_ = 0;
+  data.live_lo_objects_ = 0;
 #endif
 }
 
 
 void MarkCompactCollector::Finish() {
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
 #ifdef DEBUG
-  ASSERT(state_ == SWEEP_SPACES || state_ == REBUILD_RSETS);
-  state_ = IDLE;
+  ASSERT(data.state_ == MarkCompactCollectorData::SWEEP_SPACES ||
+         data.state_ == MarkCompactCollectorData::REBUILD_RSETS);
+  data.state_ = MarkCompactCollectorData::IDLE;
 #endif
   // The stub cache is not traversed during GC; clear the cache to
   // force lazy re-initialization of it. This must be done after the
@@ -177,11 +157,12 @@ void MarkCompactCollector::Finish() {
       static_cast<int>((old_gen_recoverable * 100.0) / old_gen_used);
   if (old_gen_fragmentation > kFragmentationLimit &&
       old_gen_recoverable > kFragmentationAllowed) {
-    compact_on_next_gc_ = true;
+    data.compact_on_next_gc_ = true;
   }
 }
 
-
+class MarkCompactCollectorPrivateData {
+ public:
 // -------------------------------------------------------------------------
 // Phase 1: tracing and marking live objects.
 //   before: all objects are in normal state.
@@ -210,8 +191,37 @@ void MarkCompactCollector::Finish() {
 // and continue with marking.  This process repeats until all reachable
 // objects have been marked.
 
-static MarkingStack marking_stack;
+  MarkingStack marking_stack_;
+  MarkCompactCollectorPrivateData() {}
+  DISALLOW_COPY_AND_ASSIGN(MarkCompactCollectorPrivateData);
+};
 
+MarkCompactCollectorData::MarkCompactCollectorData()
+  :force_compaction_(false),
+  compacting_collection_(false),
+  compact_on_next_gc_(false),
+  previous_marked_count_(0),
+#ifdef DEBUG
+  state_(IDLE),
+
+// Counters used for debugging the marking phase of mark-compact or mark-sweep
+// collection.
+  live_bytes_(0),
+  live_young_objects_(0),
+  live_old_data_objects_(0),
+  live_old_pointer_objects_(0),
+  live_code_objects_(0),
+  live_map_objects_(0),
+  live_cell_objects_(0),
+  live_lo_objects_(0),
+#endif
+  tracer_(NULL),
+  private_data_(*new MarkCompactCollectorPrivateData()) {
+}
+
+MarkCompactCollectorData::~MarkCompactCollectorData() {
+  delete &private_data_;
+}
 
 static inline HeapObject* ShortCircuitConsString(Object** p) {
   // Optimization: If the heap object pointed to by p is a non-symbol
@@ -423,6 +433,9 @@ class SymbolTableCleaner : public ObjectVisitor {
 void MarkCompactCollector::MarkUnmarkedObject(HeapObject* object) {
   ASSERT(!object->IsMarked());
   ASSERT(Heap::Contains(object));
+  MarkingStack& marking_stack = v8_context()->mark_compact_collector_data_.
+    private_data_.marking_stack_;
+
   if (object->IsMap()) {
     Map* map = Map::cast(object);
     if (FLAG_cleanup_caches_in_maps_at_gc) {
@@ -470,6 +483,8 @@ void MarkCompactCollector::MarkDescriptorArray(
   ASSERT(contents->IsFixedArray());
   ASSERT(contents->length() >= 2);
   SetMark(contents);
+  MarkingStack& marking_stack = v8_context()->mark_compact_collector_data_.
+    private_data_.marking_stack_;
   // Contents contains (value, details) pairs.  If the details say
   // that the type of descriptor is MAP_TRANSITION, CONSTANT_TRANSITION,
   // or NULL_DESCRIPTOR, we don't mark the value as live.  Only for
@@ -524,6 +539,8 @@ static int OverflowObjectSize(HeapObject* obj) {
 // is reached, whichever comes first.
 template<class T>
 static void ScanOverflowedObjects(T* it) {
+  MarkingStack& marking_stack = v8_context()->mark_compact_collector_data_.
+    private_data_.marking_stack_;
   // The caller should ensure that the marking stack is initially not full,
   // so that we don't waste effort pointlessly scanning for objects.
   ASSERT(!marking_stack.is_full());
@@ -597,6 +614,8 @@ void MarkCompactCollector::MarkRoots(RootMarkingVisitor* visitor) {
   // Handle the symbol table specially.
   MarkSymbolTable();
 
+  MarkingStack& marking_stack = v8_context()->mark_compact_collector_data_.
+    private_data_.marking_stack_;
   // There may be overflowed objects in the heap.  Visit them now.
   while (marking_stack.overflowed()) {
     RefillMarkingStack();
@@ -644,6 +663,8 @@ void MarkCompactCollector::MarkObjectGroups() {
 // After: the marking stack is empty, and all objects reachable from the
 // marking stack have been marked, or are overflowed in the heap.
 void MarkCompactCollector::EmptyMarkingStack(MarkingVisitor* visitor) {
+  MarkingStack& marking_stack = v8_context()->mark_compact_collector_data_.
+    private_data_.marking_stack_;
   while (!marking_stack.is_empty()) {
     HeapObject* object = marking_stack.Pop();
     ASSERT(object->IsHeapObject());
@@ -669,6 +690,8 @@ void MarkCompactCollector::EmptyMarkingStack(MarkingVisitor* visitor) {
 // overflowed objects in the heap so the overflow flag on the markings stack
 // is cleared.
 void MarkCompactCollector::RefillMarkingStack() {
+  MarkingStack& marking_stack = v8_context()->mark_compact_collector_data_.
+    private_data_.marking_stack_;
   ASSERT(marking_stack.overflowed());
 
   SemiSpaceIterator new_it(Heap::new_space(), &OverflowObjectSize);
@@ -709,6 +732,8 @@ void MarkCompactCollector::RefillMarkingStack() {
 // pointers.  After: the marking stack is empty and there are no overflowed
 // objects in the heap.
 void MarkCompactCollector::ProcessMarkingStack(MarkingVisitor* visitor) {
+  MarkingStack& marking_stack = v8_context()->mark_compact_collector_data_.
+    private_data_.marking_stack_;
   EmptyMarkingStack(visitor);
   while (marking_stack.overflowed()) {
     RefillMarkingStack();
@@ -718,6 +743,8 @@ void MarkCompactCollector::ProcessMarkingStack(MarkingVisitor* visitor) {
 
 
 void MarkCompactCollector::ProcessObjectGroups(MarkingVisitor* visitor) {
+  MarkingStack& marking_stack = v8_context()->mark_compact_collector_data_.
+    private_data_.marking_stack_;
   bool work_to_do = true;
   ASSERT(marking_stack.is_empty());
   while (work_to_do) {
@@ -729,10 +756,12 @@ void MarkCompactCollector::ProcessObjectGroups(MarkingVisitor* visitor) {
 
 
 void MarkCompactCollector::MarkLiveObjects() {
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
 #ifdef DEBUG
-  ASSERT(state_ == PREPARE_GC);
-  state_ = MARK_LIVE_OBJECTS;
+  ASSERT(data.state_ == MarkCompactCollectorData::PREPARE_GC);
+  data.state_ = MarkCompactCollectorData::MARK_LIVE_OBJECTS;
 #endif
+  MarkingStack& marking_stack = data.private_data_.marking_stack_;
   // The to space contains live objects, the from space is used as a marking
   // stack.
   marking_stack.Initialize(Heap::new_space()->FromSpaceLow(),
@@ -789,23 +818,24 @@ static int CountMarkedCallback(HeapObject* obj) {
 
 #ifdef DEBUG
 void MarkCompactCollector::UpdateLiveObjectCount(HeapObject* obj) {
-  live_bytes_ += obj->Size();
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
+  data.live_bytes_ += obj->Size();
   if (Heap::new_space()->Contains(obj)) {
-    live_young_objects_++;
+    data.live_young_objects_++;
   } else if (Heap::map_space()->Contains(obj)) {
     ASSERT(obj->IsMap());
-    live_map_objects_++;
+    data.live_map_objects_++;
   } else if (Heap::cell_space()->Contains(obj)) {
     ASSERT(obj->IsJSGlobalPropertyCell());
-    live_cell_objects_++;
+    data.live_cell_objects_++;
   } else if (Heap::old_pointer_space()->Contains(obj)) {
-    live_old_pointer_objects_++;
+    data.live_old_pointer_objects_++;
   } else if (Heap::old_data_space()->Contains(obj)) {
-    live_old_data_objects_++;
+    data.live_old_data_objects_++;
   } else if (Heap::code_space()->Contains(obj)) {
-    live_code_objects_++;
+    data.live_code_objects_++;
   } else if (Heap::lo_space()->Contains(obj)) {
-    live_lo_objects_++;
+    data.live_lo_objects_++;
   } else {
     UNREACHABLE();
   }
@@ -815,9 +845,11 @@ void MarkCompactCollector::UpdateLiveObjectCount(HeapObject* obj) {
 
 void MarkCompactCollector::SweepLargeObjectSpace() {
 #ifdef DEBUG
-  ASSERT(state_ == MARK_LIVE_OBJECTS);
-  state_ =
-      compacting_collection_ ? ENCODE_FORWARDING_ADDRESSES : SWEEP_SPACES;
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
+  ASSERT(data.state_ == MarkCompactCollectorData::MARK_LIVE_OBJECTS);
+  data.state_ = data.compacting_collection_ ?
+    MarkCompactCollectorData::ENCODE_FORWARDING_ADDRESSES :
+    MarkCompactCollectorData::SWEEP_SPACES;
 #endif
   // Deallocate unmarked objects and clear marked bits for marked objects.
   Heap::lo_space()->FreeUnmarkedObjects();
@@ -1248,7 +1280,8 @@ void MarkCompactCollector::DeallocateCellBlock(Address start,
 
 
 void MarkCompactCollector::EncodeForwardingAddresses() {
-  ASSERT(state_ == ENCODE_FORWARDING_ADDRESSES);
+  ASSERT(v8_context()->mark_compact_collector_data_.state_ ==
+    MarkCompactCollectorData::ENCODE_FORWARDING_ADDRESSES);
   // Objects in the active semispace of the young generation may be
   // relocated to the inactive semispace (if not promoted).  Set the
   // relocation info to the beginning of the inactive semispace.
@@ -1295,7 +1328,8 @@ void MarkCompactCollector::EncodeForwardingAddresses() {
 
 
 void MarkCompactCollector::SweepSpaces() {
-  ASSERT(state_ == SWEEP_SPACES);
+  ASSERT(v8_context()->mark_compact_collector_data_.state_ ==
+    MarkCompactCollectorData::SWEEP_SPACES);
   ASSERT(!IsCompacting());
   // Noncompacting collections simply sweep the spaces to clear the mark
   // bits and free the nonlive blocks (for old and map spaces).  We sweep
@@ -1339,14 +1373,22 @@ int MarkCompactCollector::IterateLiveObjectsInRange(
 
 int MarkCompactCollector::IterateLiveObjects(NewSpace* space,
                                              HeapObjectCallback size_f) {
-  ASSERT(MARK_LIVE_OBJECTS < state_ && state_ <= RELOCATE_OBJECTS);
+#ifdef DEBUG
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
+  ASSERT(MarkCompactCollectorData::MARK_LIVE_OBJECTS < data.state_ &&
+    data.state_ <= MarkCompactCollectorData::RELOCATE_OBJECTS);
+#endif
   return IterateLiveObjectsInRange(space->bottom(), space->top(), size_f);
 }
 
 
 int MarkCompactCollector::IterateLiveObjects(PagedSpace* space,
                                              HeapObjectCallback size_f) {
-  ASSERT(MARK_LIVE_OBJECTS < state_ && state_ <= RELOCATE_OBJECTS);
+#ifdef DEBUG
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
+  ASSERT(MarkCompactCollectorData::MARK_LIVE_OBJECTS < data.state_ &&
+    data.state_ <= MarkCompactCollectorData::RELOCATE_OBJECTS);
+#endif
   int total = 0;
   PageIterator it(space, PageIterator::PAGES_IN_USE);
   while (it.has_next()) {
@@ -1451,9 +1493,10 @@ class UpdatingVisitor: public ObjectVisitor {
 
 
 void MarkCompactCollector::UpdatePointers() {
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
 #ifdef DEBUG
-  ASSERT(state_ == ENCODE_FORWARDING_ADDRESSES);
-  state_ = UPDATE_POINTERS;
+  ASSERT(data.state_ == MarkCompactCollectorData::ENCODE_FORWARDING_ADDRESSES);
+  data.state_ = MarkCompactCollectorData::UPDATE_POINTERS;
 #endif
   UpdatingVisitor updating_visitor;
   Heap::IterateRoots(&updating_visitor, VISIT_ONLY_STRONG);
@@ -1482,12 +1525,12 @@ void MarkCompactCollector::UpdatePointers() {
   USE(live_codes);
   USE(live_cells);
   USE(live_news);
-  ASSERT(live_maps == live_map_objects_);
-  ASSERT(live_data_olds == live_old_data_objects_);
-  ASSERT(live_pointer_olds == live_old_pointer_objects_);
-  ASSERT(live_codes == live_code_objects_);
-  ASSERT(live_cells == live_cell_objects_);
-  ASSERT(live_news == live_young_objects_);
+  ASSERT(live_maps == data.live_map_objects_);
+  ASSERT(live_data_olds == data.live_old_data_objects_);
+  ASSERT(live_pointer_olds == data.live_old_pointer_objects_);
+  ASSERT(live_codes == data.live_code_objects_);
+  ASSERT(live_cells == data.live_cell_objects_);
+  ASSERT(live_news == data.live_young_objects_);
 }
 
 
@@ -1596,9 +1639,10 @@ Address MarkCompactCollector::GetForwardingAddressInOldSpace(HeapObject* obj) {
 // Phase 4: Relocate objects
 
 void MarkCompactCollector::RelocateObjects() {
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
 #ifdef DEBUG
-  ASSERT(state_ == UPDATE_POINTERS);
-  state_ = RELOCATE_OBJECTS;
+  ASSERT(data.state_ == MarkCompactCollectorData::UPDATE_POINTERS);
+  data.state_ = MarkCompactCollectorData::RELOCATE_OBJECTS;
 #endif
   // Relocates objects, always relocate map objects first. Relocating
   // objects in other space relies on map objects to get object size.
@@ -1617,12 +1661,12 @@ void MarkCompactCollector::RelocateObjects() {
   USE(live_codes);
   USE(live_cells);
   USE(live_news);
-  ASSERT(live_maps == live_map_objects_);
-  ASSERT(live_data_olds == live_old_data_objects_);
-  ASSERT(live_pointer_olds == live_old_pointer_objects_);
-  ASSERT(live_codes == live_code_objects_);
-  ASSERT(live_cells == live_cell_objects_);
-  ASSERT(live_news == live_young_objects_);
+  ASSERT(live_maps == data.live_map_objects_);
+  ASSERT(live_data_olds == data.live_old_data_objects_);
+  ASSERT(live_pointer_olds == data.live_old_pointer_objects_);
+  ASSERT(live_codes == data.live_code_objects_);
+  ASSERT(live_cells == data.live_cell_objects_);
+  ASSERT(live_news == data.live_young_objects_);
 
   // Flip from and to spaces
   Heap::new_space()->Flip();
@@ -1808,8 +1852,9 @@ int MarkCompactCollector::RelocateNewObject(HeapObject* obj) {
 
 void MarkCompactCollector::RebuildRSets() {
 #ifdef DEBUG
-  ASSERT(state_ == RELOCATE_OBJECTS);
-  state_ = REBUILD_RSETS;
+  MarkCompactCollectorData& data = v8_context()->mark_compact_collector_data_;
+  ASSERT(data.state_ == MarkCompactCollectorData::RELOCATE_OBJECTS);
+  data.state_ = MarkCompactCollectorData::REBUILD_RSETS;
 #endif
   Heap::RebuildRSets();
 }

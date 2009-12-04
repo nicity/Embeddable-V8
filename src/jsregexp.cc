@@ -119,7 +119,11 @@ class OffsetsVector {
     if (offsets_vector_length_ > kStaticOffsetsVectorSize) {
       vector_ = NewArray<int>(offsets_vector_length_);
     } else {
-      vector_ = static_offsets_vector_;
+      int* & static_offsets_vector =
+        v8_context()->reg_exp_stack_data_.static_offsets_vector_;
+      if (!static_offsets_vector)
+        static_offsets_vector = new int[kStaticOffsetsVectorSize];
+      vector_ = static_offsets_vector;
     }
   }
   inline ~OffsetsVector() {
@@ -135,13 +139,7 @@ class OffsetsVector {
   int* vector_;
   int offsets_vector_length_;
   static const int kStaticOffsetsVectorSize = 50;
-  static int static_offsets_vector_[kStaticOffsetsVectorSize];
 };
-
-
-int OffsetsVector::static_offsets_vector_[
-    OffsetsVector::kStaticOffsetsVectorSize];
-
 
 Handle<Object> RegExpImpl::Compile(Handle<JSRegExp> re,
                                    Handle<String> pattern,
@@ -1247,17 +1245,13 @@ void ChoiceNode::GenerateGuard(RegExpMacroAssembler* macro_assembler,
   }
 }
 
-
-static unibrow::Mapping<unibrow::Ecma262UnCanonicalize> uncanonicalize;
-static unibrow::Mapping<unibrow::CanonicalizationRange> canonrange;
-
-
 // Returns the number of characters in the equivalence class, omitting those
 // that cannot occur in the source string because it is ASCII.
 static int GetCaseIndependentLetters(uc16 character,
                                      bool ascii_subject,
                                      unibrow::uchar* letters) {
-  int length = uncanonicalize.get(character, '\0', letters);
+  int length = v8_context()->reg_exp_stack_data_.uncanonicalize_.get(
+    character, '\0', letters);
   // Unibrow returns 0 or 1 for characters where case independependence is
   // trivial.
   if (length == 0) {
@@ -3922,6 +3916,8 @@ static void AddUncanonicals(ZoneList<CharacterRange>* ranges,
 
 void CharacterRange::AddCaseEquivalents(ZoneList<CharacterRange>* ranges,
                                         bool is_ascii) {
+  unibrow::Mapping<unibrow::Ecma262UnCanonicalize>& uncanonicalize =
+    v8_context()->reg_exp_stack_data_.uncanonicalize_;
   uc16 bottom = from();
   uc16 top = to();
   if (is_ascii) {
@@ -3958,6 +3954,8 @@ void CharacterRange::AddCaseEquivalents(ZoneList<CharacterRange>* ranges,
     // completely contained in a block we do this for all the blocks
     // covered by the range.
     unibrow::uchar range[unibrow::Ecma262UnCanonicalize::kMaxWidth];
+    unibrow::Mapping<unibrow::CanonicalizationRange>& canonrange =
+      v8_context()->reg_exp_stack_data_.canonrange_;
     // First, look up the block that contains the 'bottom' character.
     int length = canonrange.get(bottom, '\0', range);
     if (length == 0) {
@@ -4053,6 +4051,9 @@ static void AddUncanonicals(ZoneList<CharacterRange>* ranges,
       return;
     }
   }
+
+  unibrow::Mapping<unibrow::Ecma262UnCanonicalize>& uncanonicalize  =
+    v8_context()->reg_exp_stack_data_.uncanonicalize_;
 
   // If we are completely in a zone with no case mappings then we are done.
   // We start at 2 so as not to except the ASCII range from mappings.

@@ -163,6 +163,23 @@ class ZoneScopeInfo: public ScopeInfo<ZoneListAllocationPolicy> {
 };
 
 
+class ContextSlotCacheData {
+  static const int kLength = 256;
+  struct Key {
+    Code* code;
+    String* name;
+  };
+
+  Key keys_[kLength];
+  uint32_t values_[kLength];
+
+  friend class V8Context;
+  friend class ContextSlotCache;
+
+  ContextSlotCacheData();
+  DISALLOW_COPY_AND_ASSIGN(ContextSlotCacheData);
+};
+
 // Cache for mapping (code, property name) into context slot index.
 // The cache contains both positive and negative results.
 // Slot index equals -1 means the property is absent.
@@ -195,12 +212,6 @@ class ContextSlotCache {
                             int slot_index);
 #endif
 
-  static const int kLength = 256;
-  struct Key {
-    Code* code;
-    String* name;
-  };
-
   struct Value {
     Value(Variable::Mode mode, int index) {
       ASSERT(ModeField::is_valid(mode));
@@ -225,9 +236,6 @@ class ContextSlotCache {
    private:
     uint32_t value_;
   };
-
-  static Key keys_[kLength];
-  static uint32_t values_[kLength];
 };
 
 

@@ -36,14 +36,16 @@ namespace internal {
 
 
 inline void* Zone::New(int size) {
-  ASSERT(AssertNoZoneAllocation::allow_allocation());
-  ASSERT(ZoneScope::nesting() > 0);
+  ZoneData& zone_data = v8_context()->zone_data_;
+  ASSERT(AssertNoZoneAllocation::allow_allocation(zone_data));
+  ASSERT(ZoneScope::nesting(zone_data) > 0);
   // Round up the requested size to fit the alignment.
   size = RoundUp(size, kAlignment);
 
   // Check if the requested size is available without expanding.
-  Address result = position_;
-  if ((position_ += size) > limit_) result = NewExpand(size);
+  Address result = zone_data.position_;
+  if ((zone_data.position_ += size) > zone_data.limit_)
+    result = NewExpand(size);
 
   // Check that the result has the proper alignment and return it.
   ASSERT(IsAddressAligned(result, kAlignment, 0));
@@ -58,13 +60,16 @@ T* Zone::NewArray(int length) {
 
 
 bool Zone::excess_allocation() {
-  return segment_bytes_allocated_ > zone_excess_limit_;
+  ZoneData& zone_data = v8_context()->zone_data_;
+  return zone_data.segment_bytes_allocated_ > zone_data.zone_excess_limit_;
 }
 
 
 void Zone::adjust_segment_bytes_allocated(int delta) {
-  segment_bytes_allocated_ += delta;
-  Counters::zone_segment_bytes.Set(segment_bytes_allocated_);
+  V8Context* const v8context = v8_context();
+  ZoneData& zone_data = v8context->zone_data_;
+  zone_data.segment_bytes_allocated_ += delta;
+  COUNTER(zone_segment_bytes).Set(zone_data.segment_bytes_allocated_);
 }
 
 

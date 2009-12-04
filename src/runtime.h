@@ -417,6 +417,9 @@ class Runtime : public AllStatic {
 
   // Helper functions used stubs.
   static void PerformGC(Object* result);
+
+  static void PostConstruct();
+  static void PreDestroy();
 };
 
 

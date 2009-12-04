@@ -32,15 +32,10 @@
 namespace v8 {
 namespace internal {
 
-
-Address Zone::position_ = 0;
-Address Zone::limit_ = 0;
-int Zone::zone_excess_limit_ = 256 * MB;
-int Zone::segment_bytes_allocated_ = 0;
-
-bool AssertNoZoneAllocation::allow_allocation_ = true;
-
-int ZoneScope::nesting_ = 0;
+ZoneData::ZoneData():position_(0), limit_(0), zone_excess_limit_(256 * MB),
+  segment_bytes_allocated_(0), allow_allocation_(true), nesting_(0),
+  head_(NULL), bytes_allocated_(0) {
+}
 
 // Segments represent chunks of memory: They have starting address
 // (encoded in the this pointer) and a size in bytes. Segments are
@@ -59,8 +54,8 @@ class Segment {
   Address start() const { return address(sizeof(Segment)); }
   Address end() const { return address(size_); }
 
-  static Segment* head() { return head_; }
-  static void set_head(Segment* head) { head_ = head; }
+  static Segment* head() { return v8_context()->zone_data_.head_; }
+  static void set_head(Segment* head) { v8_context()->zone_data_.head_ = head; }
 
   // Creates a new segment, sets it size, and pushes it to the front
   // of the segment chain. Returns the new segment.
@@ -68,9 +63,10 @@ class Segment {
     Segment* result = reinterpret_cast<Segment*>(Malloced::New(size));
     Zone::adjust_segment_bytes_allocated(size);
     if (result != NULL) {
-      result->next_ = head_;
+      ZoneData& zone_data = v8_context()->zone_data_;
+      result->next_ = zone_data.head_;
       result->size_ = size;
-      head_ = result;
+      zone_data.head_ = result;
     }
     return result;
   }
@@ -81,7 +77,9 @@ class Segment {
     Malloced::Delete(segment);
   }
 
-  static int bytes_allocated() { return bytes_allocated_; }
+  static int bytes_allocated() {
+    return v8_context()->zone_data_.bytes_allocated_;
+  }
 
  private:
   // Computes the address of the nth byte in this segment.
@@ -89,16 +87,9 @@ class Segment {
     return Address(this) + n;
   }
 
-  static Segment* head_;
-  static int bytes_allocated_;
   Segment* next_;
   int size_;
 };
-
-
-Segment* Segment::head_ = NULL;
-int Segment::bytes_allocated_ = 0;
-
 
 void Zone::DeleteAll() {
 #ifdef DEBUG
@@ -131,20 +122,21 @@ void Zone::DeleteAll() {
     current = next;
   }
 
+  ZoneData& zone_data = v8_context()->zone_data_;
   // If we have found a segment we want to keep, we must recompute the
   // variables 'position' and 'limit' to prepare for future allocate
   // attempts. Otherwise, we must clear the position and limit to
   // force a new segment to be allocated on demand.
   if (keep != NULL) {
     Address start = keep->start();
-    position_ = RoundUp(start, kAlignment);
-    limit_ = keep->end();
+    zone_data.position_ = RoundUp(start, kAlignment);
+    zone_data.limit_ = keep->end();
 #ifdef DEBUG
     // Zap the contents of the kept segment (but not the header).
     memset(start, kZapDeadByte, keep->capacity());
 #endif
   } else {
-    position_ = limit_ = 0;
+    zone_data.position_ = zone_data.limit_ = 0;
   }
 
   // Update the head segment to be the kept segment (if any).
@@ -153,10 +145,11 @@ void Zone::DeleteAll() {
 
 
 Address Zone::NewExpand(int size) {
+  ZoneData& zone_data = v8_context()->zone_data_;
   // Make sure the requested size is already properly aligned and that
   // there isn't enough room in the Zone to satisfy the request.
   ASSERT(size == RoundDown(size, kAlignment));
-  ASSERT(position_ + size > limit_);
+  ASSERT(zone_data.position_ + size > zone_data.limit_);
 
   // Compute the new segment size. We use a 'high water mark'
   // strategy, where we increase the segment size every time we expand
@@ -183,9 +176,9 @@ Address Zone::NewExpand(int size) {
 
   // Recompute 'top' and 'limit' based on the new segment.
   Address result = RoundUp(segment->start(), kAlignment);
-  position_ = result + size;
-  limit_ = segment->end();
-  ASSERT(position_ <= limit_);
+  zone_data.position_ = result + size;
+  zone_data.limit_ = segment->end();
+  ASSERT(zone_data.position_ <= zone_data.limit_);
   return result;
 }
 

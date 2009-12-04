@@ -207,7 +207,7 @@ void RelocInfoWriter::Write(const RelocInfo* rinfo) {
 #ifdef DEBUG
   byte* begin_pos = pos_;
 #endif
-  Counters::reloc_info_count.Increment();
+  INC_COUNTER(reloc_info_count);
   ASSERT(rinfo->pc() - last_pc_ >= 0);
   ASSERT(RelocInfo::NUMBER_OF_MODES < kMaxRelocModes);
   // Use unsigned delta-encoding for pc.
@@ -564,7 +564,8 @@ ExternalReference ExternalReference::perform_gc_function() {
 
 
 ExternalReference ExternalReference::builtin_passed_function() {
-  return ExternalReference(&Builtins::builtin_passed_function);
+  return ExternalReference(
+    &v8_context()->builtins_data_.builtin_passed_function_);
 }
 
 
@@ -731,8 +732,6 @@ ExternalReference ExternalReference::compare_doubles() {
                                     false));
 }
 
-
-ExternalReferenceRedirector* ExternalReference::redirector_ = NULL;
 
 
 #ifdef ENABLE_DEBUGGER_SUPPORT

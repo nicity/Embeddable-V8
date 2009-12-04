@@ -38,19 +38,177 @@
 namespace v8 {
 namespace internal {
 
-ThreadLocalTop Top::thread_local_;
-Mutex* Top::break_access_ = OS::CreateMutex();
+// Create a dummy thread that will wait forever on a semaphore. The only
+// purpose for this thread is to have some stack area to save essential data
+// into for use by a stacks only core dump (aka minidump).
+class PreallocatedMemoryThread: public Thread {
+ public:
+  PreallocatedMemoryThread() : keep_running_(true),
+    wait_for_ever_semaphore_(OS::CreateSemaphore(0)),
+    data_ready_semaphore_(OS::CreateSemaphore(0)),
+    data_(NULL), length_(0) {
+  }
 
-NoAllocationStringAllocator* preallocated_message_space = NULL;
+  // When the thread starts running it will allocate a fixed number of bytes
+  // on the stack and publish the location of this memory for others to use.
+  void Run() {
+    EmbeddedVector<char, 15 * 1024> local_buffer;
 
-Address top_addresses[] = {
-#define C(name) reinterpret_cast<Address>(Top::name()),
-    TOP_ADDRESS_LIST(C)
-    TOP_ADDRESS_LIST_PROF(C)
-#undef C
-    NULL
+    // Initialize the buffer with a known good value.
+    OS::StrNCpy(local_buffer, "Trace data was not generated.\n",
+                local_buffer.length());
+
+    // Publish the local buffer and signal its availability.
+    data_ = local_buffer.start();
+    length_ = local_buffer.length();
+    data_ready_semaphore_->Signal();
+
+    while (keep_running_) {
+      // This thread will wait here until the end of time.
+      wait_for_ever_semaphore_->Wait();
+    }
+
+    // Make sure we access the buffer after the wait to remove all possibility
+    // of it being optimized away.
+    OS::StrNCpy(local_buffer, "PreallocatedMemoryThread shutting down.\n",
+                local_buffer.length());
+  }
+
+  char* data() {
+    if (data_ready_semaphore_ != NULL) {
+      // Initial access is guarded until the data has been published.
+      data_ready_semaphore_->Wait();
+      delete data_ready_semaphore_;
+      data_ready_semaphore_ = NULL;
+    }
+    return data_;
+  }
+
+  unsigned length() {
+    if (data_ready_semaphore_ != NULL) {
+      // Initial access is guarded until the data has been published.
+      data_ready_semaphore_->Wait();
+      delete data_ready_semaphore_;
+      data_ready_semaphore_ = NULL;
+    }
+    return length_;
+  }
+
+  // Stop the PreallocatedMemoryThread and release its resources.
+  void RequestEnd() {
+    keep_running_ = false;
+    wait_for_ever_semaphore_->Signal();
+
+    // Wait for the thread to terminate.
+    Join();
+
+    if (data_ready_semaphore_ != NULL) {
+      delete data_ready_semaphore_;
+      data_ready_semaphore_ = NULL;
+    }
+
+    delete wait_for_ever_semaphore_;
+    wait_for_ever_semaphore_ = NULL;
+  }
+
+ private:
+  // Used to make sure that the thread keeps looping even for spurious wakeups.
+  bool keep_running_;
+
+  // This semaphore is used by the PreallocatedMemoryThread to wait for ever.
+  Semaphore* wait_for_ever_semaphore_;
+  // Semaphore to signal that the data has been initialized.
+  Semaphore* data_ready_semaphore_;
+
+  // Location and size of the preallocated memory block.
+  char* data_;
+  unsigned length_;
+
+  DISALLOW_COPY_AND_ASSIGN(PreallocatedMemoryThread);
 };
 
+class TopPrivateData {
+ public:
+  NoAllocationStringAllocator* preallocated_message_space;
+  Address top_addresses[Top::k_top_address_count];
+
+  // The preallocated memory thread singleton.
+  PreallocatedMemoryThread* the_thread_;
+  int stack_trace_nesting_level;
+  StringStream* incomplete_message;
+  bool initialized;
+
+  TopPrivateData()
+    :initialized(false), preallocated_message_space(NULL),
+    incomplete_message(NULL), stack_trace_nesting_level(NULL),
+    the_thread_(NULL) {
+    Address _top_addresses[] = {
+    #define C(name) reinterpret_cast<Address>(Top::name()),
+        TOP_ADDRESS_LIST(C)
+        TOP_ADDRESS_LIST_PROF(C)
+    #undef C
+        NULL
+    };
+    for (int i = 0; i < Top::k_top_address_count; ++i)
+      top_addresses[i] = _top_addresses[i];
+  }
+
+  void StartThread() {
+    if (the_thread_ != NULL) return;
+
+    the_thread_ = new PreallocatedMemoryThread();
+    the_thread_->Start();
+  }
+
+  // Stop the PreallocatedMemoryThread and release its resources.
+  void StopThread() {
+    if (the_thread_ == NULL) return;
+    the_thread_->RequestEnd();
+
+    // Done with the thread entirely.
+    delete the_thread_;
+    the_thread_ = NULL;
+  }
+};
+
+TopData::TopData()
+  :break_access_(OS::CreateMutex()),
+  thread_local_(),
+  top_private_data_(NULL) {
+}
+
+void Top::PostConstruct() {
+  v8_context()->top_data_.top_private_data_ = new TopPrivateData();
+}
+
+void Top::PreDestroy() {
+  delete v8_context()->top_data_.top_private_data_;
+}
+
+ThreadLocalTop::ThreadLocalTop()
+  :context_(NULL),
+  has_pending_message_(false),
+  external_caught_exception_(false),
+  formal_count_(0),
+  stack_is_cooked_(false),
+  #ifdef ENABLE_LOGGING_AND_PROFILING
+  js_entry_sp_(NULL),
+  #endif
+  handler_(NULL),
+  c_entry_fp_(NULL),
+  catcher_(NULL),
+  save_context_(NULL),
+  scheduled_exception_(NULL),
+  pending_message_end_pos_(0),
+  pending_message_start_pos_(0),
+  pending_message_script_(0),
+  pending_message_obj_(NULL),
+  pending_message_(NULL),
+  pending_exception_(false),
+  thread_id_(0),
+  failed_access_check_callback_(NULL),
+  try_catch_handler_address_(NULL) {
+}
 
 v8::TryCatch* ThreadLocalTop::TryCatchHandler() {
   return TRY_CATCH_FROM_ADDRESS(try_catch_handler_address());
@@ -76,7 +234,7 @@ void ThreadLocalTop::Initialize() {
 
 
 Address Top::get_address_from_id(Top::AddressId id) {
-  return top_addresses[id];
+  return v8_context()->top_data_.top_private_data_->top_addresses[id];
 }
 
 
@@ -110,158 +268,50 @@ void Top::Iterate(ObjectVisitor* v, ThreadLocalTop* thread) {
 
 
 void Top::Iterate(ObjectVisitor* v) {
-  ThreadLocalTop* current_t = &thread_local_;
+  ThreadLocalTop* current_t = &v8_context()->top_data_.thread_local_;
   Iterate(v, current_t);
 }
 
 
 void Top::InitializeThreadLocal() {
-  thread_local_.Initialize();
+  v8_context()->top_data_.thread_local_.Initialize();
   clear_pending_exception();
   clear_pending_message();
   clear_scheduled_exception();
 }
 
-
-// Create a dummy thread that will wait forever on a semaphore. The only
-// purpose for this thread is to have some stack area to save essential data
-// into for use by a stacks only core dump (aka minidump).
-class PreallocatedMemoryThread: public Thread {
- public:
-  PreallocatedMemoryThread() : keep_running_(true) {
-    wait_for_ever_semaphore_ = OS::CreateSemaphore(0);
-    data_ready_semaphore_ = OS::CreateSemaphore(0);
-  }
-
-  // When the thread starts running it will allocate a fixed number of bytes
-  // on the stack and publish the location of this memory for others to use.
-  void Run() {
-    EmbeddedVector<char, 15 * 1024> local_buffer;
-
-    // Initialize the buffer with a known good value.
-    OS::StrNCpy(local_buffer, "Trace data was not generated.\n",
-                local_buffer.length());
-
-    // Publish the local buffer and signal its availability.
-    data_ = local_buffer.start();
-    length_ = local_buffer.length();
-    data_ready_semaphore_->Signal();
-
-    while (keep_running_) {
-      // This thread will wait here until the end of time.
-      wait_for_ever_semaphore_->Wait();
-    }
-
-    // Make sure we access the buffer after the wait to remove all possibility
-    // of it being optimized away.
-    OS::StrNCpy(local_buffer, "PreallocatedMemoryThread shutting down.\n",
-                local_buffer.length());
-  }
-
-  static char* data() {
-    if (data_ready_semaphore_ != NULL) {
-      // Initial access is guarded until the data has been published.
-      data_ready_semaphore_->Wait();
-      delete data_ready_semaphore_;
-      data_ready_semaphore_ = NULL;
-    }
-    return data_;
-  }
-
-  static unsigned length() {
-    if (data_ready_semaphore_ != NULL) {
-      // Initial access is guarded until the data has been published.
-      data_ready_semaphore_->Wait();
-      delete data_ready_semaphore_;
-      data_ready_semaphore_ = NULL;
-    }
-    return length_;
-  }
-
-  static void StartThread() {
-    if (the_thread_ != NULL) return;
-
-    the_thread_ = new PreallocatedMemoryThread();
-    the_thread_->Start();
-  }
-
-  // Stop the PreallocatedMemoryThread and release its resources.
-  static void StopThread() {
-    if (the_thread_ == NULL) return;
-
-    the_thread_->keep_running_ = false;
-    wait_for_ever_semaphore_->Signal();
-
-    // Wait for the thread to terminate.
-    the_thread_->Join();
-
-    if (data_ready_semaphore_ != NULL) {
-      delete data_ready_semaphore_;
-      data_ready_semaphore_ = NULL;
-    }
-
-    delete wait_for_ever_semaphore_;
-    wait_for_ever_semaphore_ = NULL;
-
-    // Done with the thread entirely.
-    delete the_thread_;
-    the_thread_ = NULL;
-  }
-
- private:
-  // Used to make sure that the thread keeps looping even for spurious wakeups.
-  bool keep_running_;
-
-  // The preallocated memory thread singleton.
-  static PreallocatedMemoryThread* the_thread_;
-  // This semaphore is used by the PreallocatedMemoryThread to wait for ever.
-  static Semaphore* wait_for_ever_semaphore_;
-  // Semaphore to signal that the data has been initialized.
-  static Semaphore* data_ready_semaphore_;
-
-  // Location and size of the preallocated memory block.
-  static char* data_;
-  static unsigned length_;
-
-  DISALLOW_COPY_AND_ASSIGN(PreallocatedMemoryThread);
-};
-
-PreallocatedMemoryThread* PreallocatedMemoryThread::the_thread_ = NULL;
-Semaphore* PreallocatedMemoryThread::wait_for_ever_semaphore_ = NULL;
-Semaphore* PreallocatedMemoryThread::data_ready_semaphore_ = NULL;
-char* PreallocatedMemoryThread::data_ = NULL;
-unsigned PreallocatedMemoryThread::length_ = 0;
-
-static bool initialized = false;
-
 void Top::Initialize() {
-  CHECK(!initialized);
+  TopPrivateData* top_private_data = v8_context()->top_data_.top_private_data_;
+  CHECK(!top_private_data->initialized);
 
   InitializeThreadLocal();
 
   // Only preallocate on the first initialization.
-  if (FLAG_preallocate_message_memory && (preallocated_message_space == NULL)) {
+  if (FLAG_preallocate_message_memory &&
+      (top_private_data->preallocated_message_space == NULL)) {
     // Start the thread which will set aside some memory.
-    PreallocatedMemoryThread::StartThread();
-    preallocated_message_space =
-        new NoAllocationStringAllocator(PreallocatedMemoryThread::data(),
-                                        PreallocatedMemoryThread::length());
-    PreallocatedStorage::Init(PreallocatedMemoryThread::length() / 4);
+    top_private_data->StartThread();
+    top_private_data->preallocated_message_space =
+        new NoAllocationStringAllocator(
+          top_private_data->the_thread_->data(),
+          top_private_data->the_thread_->length());
+    PreallocatedStorage::Init(top_private_data->the_thread_->length() / 4);
   }
-  initialized = true;
+  top_private_data->initialized = true;
 }
 
 
 void Top::TearDown() {
-  if (initialized) {
+  TopPrivateData* top_private_data = v8_context()->top_data_.top_private_data_;
+  if (top_private_data->initialized) {
     // Remove the external reference to the preallocated stack memory.
-    if (preallocated_message_space != NULL) {
-      delete preallocated_message_space;
-      preallocated_message_space = NULL;
+    if (top_private_data->preallocated_message_space != NULL) {
+      delete top_private_data->preallocated_message_space;
+      top_private_data->preallocated_message_space = NULL;
     }
 
-    PreallocatedMemoryThread::StopThread();
-    initialized = false;
+    top_private_data->StopThread();
+    top_private_data->initialized = false;
   }
 }
 
@@ -274,21 +324,22 @@ void Top::RegisterTryCatchHandler(v8::TryCatch* that) {
   // returned will be the address of the C++ try catch handler itself.
   Address address = reinterpret_cast<Address>(
       SimulatorStack::RegisterCTryCatch(reinterpret_cast<uintptr_t>(that)));
-  thread_local_.set_try_catch_handler_address(address);
+  v8_context()->top_data_.thread_local_.set_try_catch_handler_address(address);
 }
 
 
 void Top::UnregisterTryCatchHandler(v8::TryCatch* that) {
-  ASSERT(thread_local_.TryCatchHandler() == that);
-  thread_local_.set_try_catch_handler_address(
+  ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
+  ASSERT(thread_local.TryCatchHandler() == that);
+  thread_local.set_try_catch_handler_address(
       reinterpret_cast<Address>(that->next_));
-  thread_local_.catcher_ = NULL;
+  thread_local.catcher_ = NULL;
   SimulatorStack::UnregisterCTryCatch();
 }
 
 
 void Top::MarkCompactPrologue(bool is_compacting) {
-  MarkCompactPrologue(is_compacting, &thread_local_);
+  MarkCompactPrologue(is_compacting, &v8_context()->top_data_.thread_local_);
 }
 
 
@@ -310,7 +361,7 @@ void Top::MarkCompactEpilogue(bool is_compacting, char* data) {
 
 
 void Top::MarkCompactEpilogue(bool is_compacting) {
-  MarkCompactEpilogue(is_compacting, &thread_local_);
+  MarkCompactEpilogue(is_compacting, &v8_context()->top_data_.thread_local_);
 }
 
 
@@ -320,30 +371,27 @@ void Top::MarkCompactEpilogue(bool is_compacting, ThreadLocalTop* thread) {
   }
 }
 
-
-static int stack_trace_nesting_level = 0;
-static StringStream* incomplete_message = NULL;
-
-
 Handle<String> Top::StackTrace() {
-  if (stack_trace_nesting_level == 0) {
-    stack_trace_nesting_level++;
+  TopPrivateData* top_private_data = v8_context()->top_data_.top_private_data_;
+  if (top_private_data->stack_trace_nesting_level == 0) {
+    top_private_data->stack_trace_nesting_level++;
     HeapStringAllocator allocator;
     StringStream::ClearMentionedObjectCache();
     StringStream accumulator(&allocator);
-    incomplete_message = &accumulator;
+    top_private_data->incomplete_message = &accumulator;
+
     PrintStack(&accumulator);
     Handle<String> stack_trace = accumulator.ToString();
-    incomplete_message = NULL;
-    stack_trace_nesting_level = 0;
+    top_private_data->incomplete_message = NULL;
+    top_private_data->stack_trace_nesting_level = 0;
     return stack_trace;
-  } else if (stack_trace_nesting_level == 1) {
-    stack_trace_nesting_level++;
+  } else if (top_private_data->stack_trace_nesting_level == 1) {
+    top_private_data->stack_trace_nesting_level++;
     OS::PrintError(
       "\n\nAttempt to print stack while printing stack (double fault)\n");
     OS::PrintError(
       "If you are lucky you may find a partial stack dump on stdout.\n\n");
-    incomplete_message->OutputToStdOut();
+    top_private_data->incomplete_message->OutputToStdOut();
     return Factory::empty_symbol();
   } else {
     OS::Abort();
@@ -354,14 +402,15 @@ Handle<String> Top::StackTrace() {
 
 
 void Top::PrintStack() {
-  if (stack_trace_nesting_level == 0) {
-    stack_trace_nesting_level++;
+  TopPrivateData* top_private_data = v8_context()->top_data_.top_private_data_;
+  if (top_private_data->stack_trace_nesting_level == 0) {
+    top_private_data->stack_trace_nesting_level++;
 
     StringAllocator* allocator;
-    if (preallocated_message_space == NULL) {
+    if (top_private_data->preallocated_message_space == NULL) {
       allocator = new HeapStringAllocator();
     } else {
-      allocator = preallocated_message_space;
+      allocator = top_private_data->preallocated_message_space;
     }
 
     NativeAllocationChecker allocation_checker(
@@ -371,23 +420,23 @@ void Top::PrintStack() {
 
     StringStream::ClearMentionedObjectCache();
     StringStream accumulator(allocator);
-    incomplete_message = &accumulator;
+    top_private_data->incomplete_message = &accumulator;
     PrintStack(&accumulator);
     accumulator.OutputToStdOut();
     accumulator.Log();
-    incomplete_message = NULL;
-    stack_trace_nesting_level = 0;
-    if (preallocated_message_space == NULL) {
+    top_private_data->incomplete_message = NULL;
+    top_private_data->stack_trace_nesting_level = 0;
+    if (top_private_data->preallocated_message_space == NULL) {
       // Remove the HeapStringAllocator created above.
       delete allocator;
     }
-  } else if (stack_trace_nesting_level == 1) {
-    stack_trace_nesting_level++;
+  } else if (top_private_data->stack_trace_nesting_level == 1) {
+    top_private_data->stack_trace_nesting_level++;
     OS::PrintError(
       "\n\nAttempt to print stack while printing stack (double fault)\n");
     OS::PrintError(
       "If you are lucky you may find a partial stack dump on stdout.\n\n");
-    incomplete_message->OutputToStdOut();
+    top_private_data->incomplete_message->OutputToStdOut();
   }
 }
 
@@ -423,13 +472,15 @@ void Top::PrintStack(StringStream* accumulator) {
 
 
 void Top::SetFailedAccessCheckCallback(v8::FailedAccessCheckCallback callback) {
-  ASSERT(thread_local_.failed_access_check_callback_ == NULL);
-  thread_local_.failed_access_check_callback_ = callback;
+  ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
+  ASSERT(thread_local.failed_access_check_callback_ == NULL);
+  thread_local.failed_access_check_callback_ = callback;
 }
 
 
 void Top::ReportFailedAccessCheck(JSObject* receiver, v8::AccessType type) {
-  if (!thread_local_.failed_access_check_callback_) return;
+  ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
+  if (!thread_local.failed_access_check_callback_) return;
 
   ASSERT(receiver->IsAccessCheckNeeded());
   ASSERT(Top::context());
@@ -447,7 +498,7 @@ void Top::ReportFailedAccessCheck(JSObject* receiver, v8::AccessType type) {
   HandleScope scope;
   Handle<JSObject> receiver_handle(receiver);
   Handle<Object> data(AccessCheckInfo::cast(data_obj)->data());
-  thread_local_.failed_access_check_callback_(
+  thread_local.failed_access_check_callback_(
     v8::Utils::ToLocal(receiver_handle),
     type,
     v8::Utils::ToLocal(data));
@@ -625,8 +676,9 @@ void Top::ScheduleThrow(Object* exception) {
   // When scheduling a throw we first throw the exception to get the
   // error reporting if it is uncaught before rescheduling it.
   Throw(exception);
-  thread_local_.scheduled_exception_ = pending_exception();
-  thread_local_.external_caught_exception_ = false;
+  ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
+  thread_local.scheduled_exception_ = pending_exception();
+  thread_local.external_caught_exception_ = false;
   clear_pending_exception();
 }
 
@@ -713,9 +765,10 @@ bool Top::ShouldReturnException(bool* is_caught_externally,
     handler = handler->next();
   }
 
+  ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
   // Get the address of the external handler so we can compare the address to
   // determine which one is closer to the top of the stack.
-  Address external_handler_address = thread_local_.try_catch_handler_address();
+  Address external_handler_address = thread_local.try_catch_handler_address();
 
   // The exception has been externally caught if and only if there is
   // an external handler which is on top of the top-most try-catch
@@ -726,7 +779,7 @@ bool Top::ShouldReturnException(bool* is_caught_externally,
 
   if (*is_caught_externally) {
     // Only report the exception if the external handler is verbose.
-    return thread_local_.TryCatchHandler()->is_verbose_;
+    return thread_local.TryCatchHandler()->is_verbose_;
   } else {
     // Report the exception if it isn't caught by JavaScript code.
     return handler == NULL;
@@ -741,6 +794,7 @@ void Top::DoThrow(Object* exception,
 
   HandleScope scope;
   Handle<Object> exception_handle(exception);
+  ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
 
   // Determine reporting and whether the exception is caught externally.
   bool is_caught_externally = false;
@@ -763,7 +817,7 @@ void Top::DoThrow(Object* exception,
   MessageLocation potential_computed_location;
   bool try_catch_needs_message =
       is_caught_externally &&
-      thread_local_.TryCatchHandler()->capture_message_;
+      thread_local.TryCatchHandler()->capture_message_;
   if (report_exception || try_catch_needs_message) {
     if (location == NULL) {
       // If no location was specified we use a computed one instead
@@ -782,19 +836,19 @@ void Top::DoThrow(Object* exception,
   }
 
   // Save the message for reporting if the the exception remains uncaught.
-  thread_local_.has_pending_message_ = report_exception;
-  thread_local_.pending_message_ = message;
+  thread_local.has_pending_message_ = report_exception;
+  thread_local.pending_message_ = message;
   if (!message_obj.is_null()) {
-    thread_local_.pending_message_obj_ = *message_obj;
+    thread_local.pending_message_obj_ = *message_obj;
     if (location != NULL) {
-      thread_local_.pending_message_script_ = *location->script();
-      thread_local_.pending_message_start_pos_ = location->start_pos();
-      thread_local_.pending_message_end_pos_ = location->end_pos();
+      thread_local.pending_message_script_ = *location->script();
+      thread_local.pending_message_start_pos_ = location->start_pos();
+      thread_local.pending_message_end_pos_ = location->end_pos();
     }
   }
 
   if (is_caught_externally) {
-    thread_local_.catcher_ = thread_local_.TryCatchHandler();
+    thread_local.catcher_ = thread_local.TryCatchHandler();
   }
 
   // NOTE: Notifying the debugger or generating the message
@@ -807,41 +861,42 @@ void Top::DoThrow(Object* exception,
 void Top::ReportPendingMessages() {
   ASSERT(has_pending_exception());
   setup_external_caught();
+  ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
   // If the pending exception is OutOfMemoryException set out_of_memory in
   // the global context.  Note: We have to mark the global context here
   // since the GenerateThrowOutOfMemory stub cannot make a RuntimeCall to
   // set it.
-  bool external_caught = thread_local_.external_caught_exception_;
+  bool external_caught = thread_local.external_caught_exception_;
   HandleScope scope;
-  if (thread_local_.pending_exception_ == Failure::OutOfMemoryException()) {
+  if (thread_local.pending_exception_ == Failure::OutOfMemoryException()) {
     context()->mark_out_of_memory();
-  } else if (thread_local_.pending_exception_ ==
+  } else if (thread_local.pending_exception_ ==
              Heap::termination_exception()) {
     if (external_caught) {
-      thread_local_.TryCatchHandler()->can_continue_ = false;
-      thread_local_.TryCatchHandler()->exception_ = Heap::null_value();
+      thread_local.TryCatchHandler()->can_continue_ = false;
+      thread_local.TryCatchHandler()->exception_ = Heap::null_value();
     }
   } else {
     Handle<Object> exception(pending_exception());
-    thread_local_.external_caught_exception_ = false;
+    thread_local.external_caught_exception_ = false;
     if (external_caught) {
-      thread_local_.TryCatchHandler()->can_continue_ = true;
-      thread_local_.TryCatchHandler()->exception_ =
-        thread_local_.pending_exception_;
-      if (!thread_local_.pending_message_obj_->IsTheHole()) {
-        try_catch_handler()->message_ = thread_local_.pending_message_obj_;
+      thread_local.TryCatchHandler()->can_continue_ = true;
+      thread_local.TryCatchHandler()->exception_ =
+        thread_local.pending_exception_;
+      if (!thread_local.pending_message_obj_->IsTheHole()) {
+        try_catch_handler()->message_ = thread_local.pending_message_obj_;
       }
     }
-    if (thread_local_.has_pending_message_) {
-      thread_local_.has_pending_message_ = false;
-      if (thread_local_.pending_message_ != NULL) {
-        MessageHandler::ReportMessage(thread_local_.pending_message_);
-      } else if (!thread_local_.pending_message_obj_->IsTheHole()) {
-        Handle<Object> message_obj(thread_local_.pending_message_obj_);
-        if (thread_local_.pending_message_script_ != NULL) {
-          Handle<Script> script(thread_local_.pending_message_script_);
-          int start_pos = thread_local_.pending_message_start_pos_;
-          int end_pos = thread_local_.pending_message_end_pos_;
+    if (thread_local.has_pending_message_) {
+      thread_local.has_pending_message_ = false;
+      if (thread_local.pending_message_ != NULL) {
+        MessageHandler::ReportMessage(thread_local.pending_message_);
+      } else if (!thread_local.pending_message_obj_->IsTheHole()) {
+        Handle<Object> message_obj(thread_local.pending_message_obj_);
+        if (thread_local.pending_message_script_ != NULL) {
+          Handle<Script> script(thread_local.pending_message_script_);
+          int start_pos = thread_local.pending_message_start_pos_;
+          int end_pos = thread_local.pending_message_end_pos_;
           MessageLocation location(script, start_pos, end_pos);
           MessageHandler::ReportMessage(&location, message_obj);
         } else {
@@ -849,7 +904,7 @@ void Top::ReportPendingMessages() {
         }
       }
     }
-    thread_local_.external_caught_exception_ = external_caught;
+    thread_local.external_caught_exception_ = external_caught;
     set_pending_exception(*exception);
   }
   clear_pending_message();
@@ -862,6 +917,7 @@ void Top::TraceException(bool flag) {
 
 
 bool Top::OptionalRescheduleException(bool is_bottom_call) {
+  ThreadLocalTop& thread_local = v8_context()->top_data_.thread_local_;
   // Allways reschedule out of memory exceptions.
   if (!is_out_of_memory()) {
     bool is_termination_exception =
@@ -872,17 +928,17 @@ bool Top::OptionalRescheduleException(bool is_bottom_call) {
 
     if (is_termination_exception) {
       if (is_bottom_call) {
-        thread_local_.external_caught_exception_ = false;
+        thread_local.external_caught_exception_ = false;
         clear_pending_exception();
         return false;
       }
-    } else if (thread_local_.external_caught_exception_) {
+    } else if (thread_local.external_caught_exception_) {
       // If the exception is externally caught, clear it if there are no
       // JavaScript frames on the way to the C++ frame that has the
       // external handler.
-      ASSERT(thread_local_.try_catch_handler_address() != NULL);
+      ASSERT(thread_local.try_catch_handler_address() != NULL);
       Address external_handler_address =
-          thread_local_.try_catch_handler_address();
+          thread_local.try_catch_handler_address();
       JavaScriptFrameIterator it;
       if (it.done() || (it.frame()->sp() > external_handler_address)) {
         clear_exception = true;
@@ -891,14 +947,14 @@ bool Top::OptionalRescheduleException(bool is_bottom_call) {
 
     // Clear the exception if needed.
     if (clear_exception) {
-      thread_local_.external_caught_exception_ = false;
+      thread_local.external_caught_exception_ = false;
       clear_pending_exception();
       return false;
     }
   }
 
   // Reschedule the exception.
-  thread_local_.scheduled_exception_ = pending_exception();
+  thread_local.scheduled_exception_ = pending_exception();
   clear_pending_exception();
   return true;
 }
@@ -922,7 +978,8 @@ bool Top::is_out_of_memory() {
 
 
 Handle<Context> Top::global_context() {
-  GlobalObject* global = thread_local_.context_->global();
+  GlobalObject* global = v8_context()->top_data_.thread_local_.context_->
+    global();
   return Handle<Context>(global->global_context());
 }
 
@@ -966,25 +1023,31 @@ Object* Top::LookupSpecialFunction(JSObject* receiver,
 
 
 char* Top::ArchiveThread(char* to) {
-  memcpy(to, reinterpret_cast<char*>(&thread_local_), sizeof(thread_local_));
+  memcpy(
+    to,
+    reinterpret_cast<char*>(&v8_context()->top_data_.thread_local_),
+    sizeof(ThreadLocalTop));
   InitializeThreadLocal();
-  return to + sizeof(thread_local_);
+  return to + sizeof(ThreadLocalTop);
 }
 
 
 char* Top::RestoreThread(char* from) {
-  memcpy(reinterpret_cast<char*>(&thread_local_), from, sizeof(thread_local_));
-  return from + sizeof(thread_local_);
+  memcpy(
+    reinterpret_cast<char*>(&v8_context()->top_data_.thread_local_),
+    from,
+    sizeof(ThreadLocalTop));
+  return from + sizeof(ThreadLocalTop);
 }
 
 
 ExecutionAccess::ExecutionAccess() {
-  Top::break_access_->Lock();
+  v8_context()->top_data_.break_access_->Lock();
 }
 
 
 ExecutionAccess::~ExecutionAccess() {
-  Top::break_access_->Unlock();
+  v8_context()->top_data_.break_access_->Unlock();
 }
 
 

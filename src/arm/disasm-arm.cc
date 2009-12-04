@@ -1089,7 +1089,8 @@ namespace v8i = v8::internal;
 
 
 const char* NameConverter::NameOfAddress(byte* addr) const {
-  static v8::internal::EmbeddedVector<char, 32> tmp_buffer;
+  v8i::EmbeddedVector<char, 32>& tmp_buffer =
+    v8::v8_context()->disassembler_data_->tmp_buffer_;
   v8::internal::OS::SNPrintF(tmp_buffer, "%p", addr);
   return tmp_buffer.start();
 }

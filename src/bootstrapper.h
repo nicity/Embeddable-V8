@@ -32,6 +32,19 @@
 namespace v8 {
 namespace internal {
 
+class BootstrapperPrivateData;
+
+class BootstrapperData {
+ public:
+  BootstrapperPrivateData& private_data_;
+ private:
+  friend class Bootstrapper;
+  friend class V8Context;
+  BootstrapperData();
+  ~BootstrapperData();
+  DISALLOW_COPY_AND_ASSIGN(BootstrapperData);
+};
+
 // The Boostrapper is the public interface for creating a JavaScript global
 // context.
 class Bootstrapper : public AllStatic {

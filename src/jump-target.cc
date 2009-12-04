@@ -37,8 +37,6 @@ namespace internal {
 // -------------------------------------------------------------------------
 // JumpTarget implementation.
 
-bool JumpTarget::compiling_deferred_code_ = false;
-
 
 void JumpTarget::Unuse() {
   reaching_frames_.Clear();
@@ -53,9 +51,9 @@ void JumpTarget::ComputeEntryFrame() {
   // the directionality of the block.  Compute: an entry frame for the
   // block.
 
-  Counters::compute_entry_frame.Increment();
+  INC_COUNTER(compute_entry_frame);
 #ifdef DEBUG
-  if (compiling_deferred_code_) {
+  if (v8_context()->code_generator_data_.compiling_deferred_code_) {
     ASSERT(reaching_frames_.length() > 1);
     VirtualFrame* frame = reaching_frames_[0];
     bool all_identical = true;

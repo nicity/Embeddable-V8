@@ -69,8 +69,9 @@ VMState::VMState(StateTag state) : disabled_(true), external_callback_(NULL) {
   if (state == EXTERNAL) state = OTHER;
 #endif
   state_ = state;
-  previous_ = Logger::current_state_;
-  Logger::current_state_ = this;
+  LoggerData& data = v8_context()->logger_data_;
+  previous_ = data.current_state_;
+  data.current_state_ = this;
 
   if (FLAG_log_state_changes) {
     LOG(UncheckedStringEvent("Entering", StateToString(state_)));
@@ -96,7 +97,7 @@ VMState::VMState(StateTag state) : disabled_(true), external_callback_(NULL) {
 
 VMState::~VMState() {
   if (disabled_) return;
-  Logger::current_state_ = previous_;
+  v8_context()->logger_data_.current_state_ = previous_;
 
   if (FLAG_log_state_changes) {
     LOG(UncheckedStringEvent("Leaving", StateToString(state_)));

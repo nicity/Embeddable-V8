@@ -68,6 +68,7 @@ class DateParser : public AllStatic {
     explicit InputReader(Vector<Char> s)
         : index_(0),
           buffer_(s),
+          v8context_(v8_context()),
           has_read_number_(false) {
       Next();
     }
@@ -101,7 +102,8 @@ class DateParser : public AllStatic {
     bool Skip(uint32_t c) { return ch_ == c ?  (Next(), true) : false; }
 
     bool SkipWhiteSpace() {
-      return Scanner::kIsWhiteSpace.get(ch_) ? (Next(), true) : false;
+      return v8context_->scanner_data_.
+        kIsWhiteSpace_.get(ch_) ? (Next(), true) : false;
     }
 
     bool SkipParentheses() {
@@ -134,6 +136,7 @@ class DateParser : public AllStatic {
     uint32_t GetAsciiAlphaLower() const { return ch_ | 32; }
 
     int index_;
+    V8Context* const v8context_;
     Vector<Char> buffer_;
     bool has_read_number_;
     uint32_t ch_;

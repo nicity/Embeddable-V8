@@ -58,6 +58,7 @@
 #include "allocation.h"
 #include "utils.h"
 #include "flags.h"
+#include "v8-global-context.h"
 
 // Objects & heap
 #include "objects.h"
@@ -73,6 +74,44 @@ namespace v8 {
 namespace internal {
 
 class Deserializer;
+class V8;
+
+class V8Data {
+ public:
+  FatalErrorCallback exception_behavior() const {
+    return exception_behavior_;
+  }
+
+  void exception_behavior(FatalErrorCallback exception_behavior) {
+    exception_behavior_ = exception_behavior;
+  }
+ private:
+  // Track whether this V8 instance has ever called v8::Locker. This allows the
+  // API code to verify that the lock is always held when V8 is being entered.
+
+  bool active_;
+
+  // True if engine is currently running
+  bool is_running_;
+  // True if V8 has ever been run
+  bool has_been_setup_;
+  // True if error has been signaled for current engine
+  // (reset to false if engine is restarted)
+  bool has_fatal_error_;
+  // True if engine has been shut down
+  // (reset if engine is restarted)
+  bool has_been_disposed_;
+
+  // --- E x c e p t i o n   B e h a v i o r ---
+  FatalErrorCallback exception_behavior_;
+
+  V8Data();
+
+  friend class V8Context;
+  friend class V8;
+  friend class Locker;
+  DISALLOW_COPY_AND_ASSIGN(V8Data);
+};
 
 class V8 : public AllStatic {
  public:
@@ -84,9 +123,12 @@ class V8 : public AllStatic {
   // empty heap.
   static bool Initialize(Deserializer* des);
   static void TearDown();
-  static bool IsRunning() { return is_running_; }
+  static bool IsRunning() { return v8_context()->v8_data_.is_running_; }
   // To be dead you have to have lived
-  static bool IsDead() { return has_fatal_error_ || has_been_disposed_; }
+  static bool IsDead() {
+    return v8_context()->v8_data_.has_fatal_error_ ||
+      v8_context()->v8_data_.has_been_disposed_;
+  }
   static void SetFatalError();
 
   // Report process out of memory. Implementation found in api.cc.
@@ -98,18 +140,6 @@ class V8 : public AllStatic {
 
   // Idle notification directly from the API.
   static bool IdleNotification();
-
- private:
-  // True if engine is currently running
-  static bool is_running_;
-  // True if V8 has ever been run
-  static bool has_been_setup_;
-  // True if error has been signaled for current engine
-  // (reset to false if engine is restarted)
-  static bool has_fatal_error_;
-  // True if engine has been shut down
-  // (reset if engine is restarted)
-  static bool has_been_disposed_;
 };
 
 } }  // namespace v8::internal

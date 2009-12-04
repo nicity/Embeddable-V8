@@ -600,7 +600,7 @@ void KeyedLoadIC::GenerateGeneric(MacroAssembler* masm) {
 
   // Slow case: Push extra copies of the arguments (2).
   __ bind(&slow);
-  __ IncrementCounter(&Counters::keyed_load_generic_slow, 1, r0, r1);
+  __ IncrementCounter(&COUNTER(keyed_load_generic_slow), 1, r0, r1);
   __ ldm(ia, sp, r0.bit() | r1.bit());
   __ stm(db_w, sp, r0.bit() | r1.bit());
   // Do tail-call to runtime routine.

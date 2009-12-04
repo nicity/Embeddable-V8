@@ -59,7 +59,7 @@ Handle<Code> CodeStub::GetCode() {
     v8::HandleScope scope;
 
     // Update the static counter each time a new code stub is generated.
-    Counters::code_stubs.Increment();
+    INC_COUNTER(code_stubs);
 
     // Generate the new code.
     MacroAssembler masm(NULL, 256);
@@ -84,7 +84,7 @@ Handle<Code> CodeStub::GetCode() {
     Bootstrapper::AddFixup(*code, &masm);
 
     LOG(CodeCreateEvent(Logger::STUB_TAG, *code, GetName()));
-    Counters::total_stubs_code_size.Increment(code->instruction_size());
+    INCREMENT_COUNTER(total_stubs_code_size, code->instruction_size());
 
 #ifdef ENABLE_DISASSEMBLER
     if (FLAG_print_code_stubs) {

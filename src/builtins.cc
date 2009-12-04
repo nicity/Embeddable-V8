@@ -136,7 +136,7 @@ BUILTIN_END
 
 
 BUILTIN(ArrayCodeGeneric) {
-  Counters::array_function_runtime.Increment();
+  INC_COUNTER(array_function_runtime);
 
   JSArray* array;
   if (CalledAsConstructor()) {
@@ -326,7 +326,8 @@ BUILTIN(HandleApiCall) {
 
   // TODO(428): Remove use of static variable, handle API callbacks directly.
   Handle<JSFunction> function =
-      Handle<JSFunction>(JSFunction::cast(Builtins::builtin_passed_function));
+      Handle<JSFunction>(JSFunction::cast(
+        v8_context()->builtins_data_.builtin_passed_function_));
 
   if (is_construct) {
     Handle<FunctionTemplateInfo> desc =
@@ -480,12 +481,6 @@ BUILTIN(HandleApiCallAsConstructor) {
   return HandleApiCallAsFunctionOrConstructor(true, args);
 }
 BUILTIN_END
-
-
-// TODO(1238487): This is a nasty hack. We need to improve the way we
-// call builtins considerable to get rid of this and the hairy macros
-// in builtins.cc.
-Object* Builtins::builtin_passed_function;
 
 
 
@@ -700,8 +695,13 @@ static void Generate_StubNoRegisters_DebugBreak(MacroAssembler* masm) {
 }
 #endif
 
-Object* Builtins::builtins_[builtin_count] = { NULL, };
-const char* Builtins::names_[builtin_count] = { NULL, };
+BuiltinsData::BuiltinsData()
+  :is_initialized_(false), builtin_passed_function_(NULL) {
+  for (int i = 0; i < builtin_count; ++i) {
+    builtins_[i] = NULL;
+    names_[i] = NULL;
+  }
+}
 
 #define DEF_ENUM_C(name) FUNCTION_ADDR(Builtin_##name),
   Address Builtins::c_functions_[cfunction_count] = {
@@ -721,9 +721,9 @@ int Builtins::javascript_argc_[id_count] = {
 #undef DEF_JS_NAME
 #undef DEF_JS_ARGC
 
-static bool is_initialized = false;
 void Builtins::Setup(bool create_heap_objects) {
-  ASSERT(!is_initialized);
+  BuiltinsData& data = v8_context()->builtins_data_;
+  ASSERT(!data.is_initialized_);
 
   // Create a scope for the handles in the builtins.
   HandleScope scope;
@@ -800,7 +800,7 @@ void Builtins::Setup(bool create_heap_objects) {
       // Log the event and add the code to the builtins array.
       LOG(CodeCreateEvent(Logger::BUILTIN_TAG,
                           Code::cast(code), functions[i].s_name));
-      builtins_[i] = code;
+      data.builtins_[i] = code;
 #ifdef ENABLE_DISASSEMBLER
       if (FLAG_print_builtin_code) {
         PrintF("Builtin: %s\n", functions[i].s_name);
@@ -810,32 +810,35 @@ void Builtins::Setup(bool create_heap_objects) {
 #endif
     } else {
       // Deserializing. The values will be filled in during IterateBuiltins.
-      builtins_[i] = NULL;
+      data.builtins_[i] = NULL;
     }
-    names_[i] = functions[i].s_name;
+    data.names_[i] = functions[i].s_name;
   }
 
   // Mark as initialized.
-  is_initialized = true;
+  data.is_initialized_ = true;
 }
 
 
 void Builtins::TearDown() {
-  is_initialized = false;
+  v8_context()->builtins_data_.is_initialized_ = false;
 }
 
 
 void Builtins::IterateBuiltins(ObjectVisitor* v) {
-  v->VisitPointers(&builtins_[0], &builtins_[0] + builtin_count);
+  BuiltinsData& data = v8_context()->builtins_data_;
+  v->VisitPointers(&data.builtins_[0], &data.builtins_[0] + builtin_count);
 }
 
 
 const char* Builtins::Lookup(byte* pc) {
-  if (is_initialized) {  // may be called during initialization (disassembler!)
+  BuiltinsData& data = v8_context()->builtins_data_;
+  if (data.is_initialized_) {
+    // may be called during initialization (disassembler!)
     for (int i = 0; i < builtin_count; i++) {
-      Code* entry = Code::cast(builtins_[i]);
+      Code* entry = Code::cast(data.builtins_[i]);
       if (entry->contains(pc)) {
-        return names_[i];
+        return data.names_[i];
       }
     }
   }

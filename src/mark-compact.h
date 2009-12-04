@@ -43,7 +43,82 @@ typedef void (*DeallocateFunction)(Address start, int size_in_bytes);
 // Forward declarations.
 class RootMarkingVisitor;
 class MarkingVisitor;
+class MarkCompactCollectorPrivateData;
 
+class MarkCompactCollectorData {
+ public:
+  MarkCompactCollectorPrivateData& private_data_;
+ private:
+  #ifdef DEBUG
+  enum CollectorState {
+    IDLE,
+    PREPARE_GC,
+    MARK_LIVE_OBJECTS,
+    SWEEP_SPACES,
+    ENCODE_FORWARDING_ADDRESSES,
+    UPDATE_POINTERS,
+    RELOCATE_OBJECTS,
+    REBUILD_RSETS
+  };
+
+  // The current stage of the collector.
+  CollectorState state_;
+
+  // -----------------------------------------------------------------------
+  // Counters used for debugging the marking phase of mark-compact or
+  // mark-sweep collection.
+
+  // Number of live objects in Heap::to_space_.
+  int live_young_objects_;
+
+  // Number of live objects in Heap::old_pointer_space_.
+  int live_old_pointer_objects_;
+
+  // Number of live objects in Heap::old_data_space_.
+  int live_old_data_objects_;
+
+  // Number of live objects in Heap::code_space_.
+  int live_code_objects_;
+
+  // Number of live objects in Heap::map_space_.
+  int live_map_objects_;
+
+  // Number of live objects in Heap::cell_space_.
+  int live_cell_objects_;
+
+  // Number of live objects in Heap::lo_space_.
+  int live_lo_objects_;
+
+  // Number of live bytes in this collection.
+  int live_bytes_;
+
+#endif
+
+  // Global flag that forces a compaction.
+  bool force_compaction_;
+
+  // Global flag indicating whether spaces were compacted on the last GC.
+  bool compacting_collection_;
+
+  // Global flag indicating whether spaces will be compacted on the next GC.
+  bool compact_on_next_gc_;
+
+  // The number of objects left marked at the end of the last completed full
+  // GC (expected to be zero).
+  int previous_marked_count_;
+
+  // A pointer to the current stack-allocated GC tracer object during a full
+  // collection (NULL before and after).
+  GCTracer* tracer_;
+
+  friend class MarkCompactCollector;
+  friend class V8Context;
+
+  MarkCompactCollectorData();
+  ~MarkCompactCollectorData();
+
+  DISALLOW_COPY_AND_ASSIGN(MarkCompactCollectorData);
+};
 
 // -------------------------------------------------------------------------
 // Mark-Compact collector
@@ -78,7 +153,7 @@ class MarkCompactCollector: public AllStatic {
   // Set the global force_compaction flag, it must be called before Prepare
   // to take effect.
   static void SetForceCompaction(bool value) {
-    force_compaction_ = value;
+    v8_context()->mark_compact_collector_data_.force_compaction_ = value;
   }
 
   // Prepares for GC by resetting relocation info in old and map spaces and
@@ -89,57 +164,36 @@ class MarkCompactCollector: public AllStatic {
   static void CollectGarbage();
 
   // True if the last full GC performed heap compaction.
-  static bool HasCompacted() { return compacting_collection_; }
+  static bool HasCompacted() {
+    return v8_context()->mark_compact_collector_data_.compacting_collection_;
+  }
 
   // True after the Prepare phase if the compaction is taking place.
-  static bool IsCompacting() { return compacting_collection_; }
+  static bool IsCompacting() {
+    return v8_context()->mark_compact_collector_data_.compacting_collection_;
+  }
 
   // The count of the number of objects left marked at the end of the last
   // completed full GC (expected to be zero).
-  static int previous_marked_count() { return previous_marked_count_; }
+  static int previous_marked_count() {
+    return v8_context()->mark_compact_collector_data_.previous_marked_count_;
+  }
 
   // During a full GC, there is a stack-allocated GCTracer that is used for
   // bookkeeping information.  Return a pointer to that tracer.
-  static GCTracer* tracer() { return tracer_; }
+  static GCTracer* tracer() {
+    return v8_context()->mark_compact_collector_data_.tracer_;
+  }
 
 #ifdef DEBUG
   // Checks whether performing mark-compact collection.
-  static bool in_use() { return state_ > PREPARE_GC; }
+  static bool in_use() {
+    return v8_context()->mark_compact_collector_data_.state_ >
+      MarkCompactCollectorData::PREPARE_GC;
+  }
 #endif
 
  private:
-#ifdef DEBUG
-  enum CollectorState {
-    IDLE,
-    PREPARE_GC,
-    MARK_LIVE_OBJECTS,
-    SWEEP_SPACES,
-    ENCODE_FORWARDING_ADDRESSES,
-    UPDATE_POINTERS,
-    RELOCATE_OBJECTS,
-    REBUILD_RSETS
-  };
-
-  // The current stage of the collector.
-  static CollectorState state_;
-#endif
-
-  // Global flag that forces a compaction.
-  static bool force_compaction_;
-
-  // Global flag indicating whether spaces were compacted on the last GC.
-  static bool compacting_collection_;
-
-  // Global flag indicating whether spaces will be compacted on the next GC.
-  static bool compact_on_next_gc_;
-
-  // The number of objects left marked at the end of the last completed full
-  // GC (expected to be zero).
-  static int previous_marked_count_;
-
-  // A pointer to the current stack-allocated GC tracer object during a full
-  // collection (NULL before and after).
-  static GCTracer* tracer_;
 
   // Finishes GC, performs heap verification if enabled.
   static void Finish();
@@ -167,7 +221,8 @@ class MarkCompactCollector: public AllStatic {
   }
 
   static inline void SetMark(HeapObject* obj) {
-    tracer_->increment_marked_count();
+    v8_context()->mark_compact_collector_data_.
+      tracer_->increment_marked_count();
 #ifdef DEBUG
     UpdateLiveObjectCount(obj);
 #endif
@@ -392,34 +447,7 @@ class MarkCompactCollector: public AllStatic {
 
 #ifdef DEBUG
   // -----------------------------------------------------------------------
-  // Debugging variables, functions and classes
-  // Counters used for debugging the marking phase of mark-compact or
-  // mark-sweep collection.
-
-  // Number of live objects in Heap::to_space_.
-  static int live_young_objects_;
-
-  // Number of live objects in Heap::old_pointer_space_.
-  static int live_old_pointer_objects_;
-
-  // Number of live objects in Heap::old_data_space_.
-  static int live_old_data_objects_;
-
-  // Number of live objects in Heap::code_space_.
-  static int live_code_objects_;
-
-  // Number of live objects in Heap::map_space_.
-  static int live_map_objects_;
-
-  // Number of live objects in Heap::cell_space_.
-  static int live_cell_objects_;
-
-  // Number of live objects in Heap::lo_space_.
-  static int live_lo_objects_;
-
-  // Number of live bytes in this collection.
-  static int live_bytes_;
-
+  // Debugging functions and classes
   friend class MarkObjectVisitor;
   static void VisitObject(HeapObject* obj);
 

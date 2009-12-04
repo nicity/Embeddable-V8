@@ -92,10 +92,6 @@ namespace internal {
   RUNTIME_ASSERT(obj->IsNumber());                                   \
   type name = NumberTo##Type(obj);
 
-// Non-reentrant string buffer for efficient general use in this file.
-static StaticResource<StringInputBuffer> runtime_string_input_buffer;
-
-
 static Object* DeepCopyBoilerplate(JSObject* boilerplate) {
   StackLimitCheck check;
   if (check.HasOverflowed()) return Top::StackOverflow();
@@ -1910,9 +1906,30 @@ class BMGoodSuffixBuffers {
   DISALLOW_COPY_AND_ASSIGN(BMGoodSuffixBuffers);
 };
 
-// buffers reused by BoyerMoore
-static int bad_char_occurrence[kBMAlphabetSize];
-static BMGoodSuffixBuffers bmgs_buffers;
+class RuntimeData {
+ public:
+  // Non-reentrant string buffer for efficient general use in this file.
+  StaticResource<StringInputBuffer> runtime_string_input_buffer_;
+  // buffers reused by BoyerMoore
+  int bad_char_occurrence_[kBMAlphabetSize];
+  BMGoodSuffixBuffers bmgs_buffers_;
+  StringInputBuffer buf1_;
+  StringInputBuffer buf2_;
+
+  unibrow::Mapping<unibrow::ToUppercase, 128> to_upper_mapping_;
+  unibrow::Mapping<unibrow::ToLowercase, 128> to_lower_mapping_;
+
+  // Arrays for the individual characters of the two Smis.  Smis are
+  // 31 bit integers and 10 decimal digits are therefore enough.
+  int x_elms_[10];
+  int y_elms_[10];
+
+  StringInputBuffer bufx_;
+  StringInputBuffer bufy_;
+
+  RuntimeData() {}
+  DISALLOW_COPY_AND_ASSIGN(RuntimeData);
+};
 
 // Compute the bad-char table for Boyer-Moore in the static buffer.
 template <typename pchar>
@@ -1923,6 +1940,9 @@ static void BoyerMoorePopulateBadCharTable(Vector<const pchar> pattern,
   // Notice: Doesn't include the last character.
   int table_size = (sizeof(pchar) == 1) ? String::kMaxAsciiCharCode + 1
                                         : kBMAlphabetSize;
+  int* const  bad_char_occurrence = v8_context()->runtime_data_->
+    bad_char_occurrence_;
+
   if (start == 0) {  // All patterns less than kBMMaxShift in length.
     memset(bad_char_occurrence, -1, table_size * sizeof(*bad_char_occurrence));
   } else {
@@ -1943,6 +1963,8 @@ static void BoyerMoorePopulateGoodSuffixTable(Vector<const pchar> pattern,
   int m = pattern.length();
   int len = m - start;
   // Compute Good Suffix tables.
+  BMGoodSuffixBuffers& bmgs_buffers =
+    v8_context()->runtime_data_->bmgs_buffers_;
   bmgs_buffers.init(m);
 
   bmgs_buffers.shift(m-1) = 1;
@@ -1988,17 +2010,17 @@ static void BoyerMoorePopulateGoodSuffixTable(Vector<const pchar> pattern,
 }
 
 template <typename schar, typename pchar>
-static inline int CharOccurrence(int char_code) {
+static inline int CharOccurrence(int char_code, RuntimeData* data) {
   if (sizeof(schar) == 1) {
-    return bad_char_occurrence[char_code];
+    return data->bad_char_occurrence_[char_code];
   }
   if (sizeof(pchar) == 1) {
     if (char_code > String::kMaxAsciiCharCode) {
       return -1;
     }
-    return bad_char_occurrence[char_code];
+    return data->bad_char_occurrence_[char_code];
   }
-  return bad_char_occurrence[char_code % kBMAlphabetSize];
+  return data->bad_char_occurrence_[char_code % kBMAlphabetSize];
 }
 
 // Restricted simplified Boyer-Moore string matching.
@@ -2016,16 +2038,17 @@ static int BoyerMooreHorspool(Vector<const schar> subject,
 
   BoyerMoorePopulateBadCharTable(pattern, start);
 
+  RuntimeData* const data = v8_context()->runtime_data_;
   int badness = -m;  // How bad we are doing without a good-suffix table.
   int idx;  // No matches found prior to this index.
   pchar last_char = pattern[m - 1];
-  int last_char_shift = m - 1 - CharOccurrence<schar, pchar>(last_char);
+  int last_char_shift = m - 1 - CharOccurrence<schar, pchar>(last_char, data);
   // Perform search
   for (idx = start_index; idx <= n - m;) {
     int j = m - 1;
     int c;
     while (last_char != (c = subject[idx + j])) {
-      int bc_occ = CharOccurrence<schar, pchar>(c);
+      int bc_occ = CharOccurrence<schar, pchar>(c, data);
       int shift = j - bc_occ;
       idx += shift;
       badness += 1 - shift;  // at most zero, so badness cannot increase.
@@ -2069,12 +2092,14 @@ static int BoyerMooreIndexOf(Vector<const schar> subject,
   // Build the Good Suffix table and continue searching.
   BoyerMoorePopulateGoodSuffixTable(pattern, start);
   pchar last_char = pattern[m - 1];
+  RuntimeData* runtime_data = v8_context()->runtime_data_;
+  BMGoodSuffixBuffers& bmgs_buffers = runtime_data->bmgs_buffers_;
   // Continue search from i.
   while (idx <= n - m) {
     int j = m - 1;
     schar c;
     while (last_char != (c = subject[idx + j])) {
-      int shift = j - CharOccurrence<schar, pchar>(c);
+      int shift = j - CharOccurrence<schar, pchar>(c, runtime_data);
       idx += shift;
       if (idx > n - m) {
         return -1;
@@ -2086,10 +2111,10 @@ static int BoyerMooreIndexOf(Vector<const schar> subject,
     } else if (j < start) {
       // we have matched more than our tables allow us to be smart about.
       // Fall back on BMH shift.
-      idx += m - 1 - CharOccurrence<schar, pchar>(last_char);
+      idx += m - 1 - CharOccurrence<schar, pchar>(last_char, runtime_data);
     } else {
       int gs_shift = bmgs_buffers.shift(j + 1);       // Good suffix shift.
-      int bc_occ = CharOccurrence<schar, pchar>(c);
+      int bc_occ = CharOccurrence<schar, pchar>(c, runtime_data);
       int shift = j - bc_occ;                         // Bad-char shift.
       if (gs_shift > shift) {
         shift = gs_shift;
@@ -2359,8 +2384,9 @@ static Object* Runtime_StringLocaleCompare(Arguments args) {
   str1->TryFlattenIfNotFlat();
   str2->TryFlattenIfNotFlat();
 
-  static StringInputBuffer buf1;
-  static StringInputBuffer buf2;
+  RuntimeData* data = v8_context()->runtime_data_;
+  StringInputBuffer& buf1 = data->buf1_;
+  StringInputBuffer& buf2 = data->buf2_;
 
   buf1.Reset(str1);
   buf2.Reset(str2);
@@ -3274,7 +3300,8 @@ static Object* Runtime_URIEscape(Arguments args) {
   int escaped_length = 0;
   int length = source->length();
   {
-    Access<StringInputBuffer> buffer(&runtime_string_input_buffer);
+    Access<StringInputBuffer> buffer(
+      &v8_context()->runtime_data_->runtime_string_input_buffer_);
     buffer->Reset(source);
     while (buffer->has_more()) {
       uint16_t character = buffer->GetNext();
@@ -3301,7 +3328,8 @@ static Object* Runtime_URIEscape(Arguments args) {
   String* destination = String::cast(o);
   int dest_position = 0;
 
-  Access<StringInputBuffer> buffer(&runtime_string_input_buffer);
+  Access<StringInputBuffer> buffer(
+    &v8_context()->runtime_data_->runtime_string_input_buffer_);
   buffer->Rewind();
   while (buffer->has_more()) {
     uint16_t chr = buffer->GetNext();
@@ -3427,7 +3455,9 @@ static Object* Runtime_StringParseInt(Arguments args) {
   int i;
 
   // Skip leading white space.
-  for (i = 0; i < len && Scanner::kIsWhiteSpace.get(s->Get(i)); i++) ;
+  unibrow::Predicate<unibrow::WhiteSpace, 128>& kIsWhiteSpace =
+    v8_context()->scanner_data_.kIsWhiteSpace_;
+  for (i = 0; i < len && kIsWhiteSpace.get(s->Get(i)); i++) ;
   if (i == len) return Heap::nan_value();
 
   // Compute the sign (default to +).
@@ -3482,8 +3512,6 @@ static Object* Runtime_StringParseFloat(Arguments args) {
 }
 
 
-static unibrow::Mapping<unibrow::ToUppercase, 128> to_upper_mapping;
-static unibrow::Mapping<unibrow::ToLowercase, 128> to_lower_mapping;
 
 
 template <class Converter>
@@ -3511,7 +3539,8 @@ static Object* ConvertCaseHelper(String* s,
 
   // Convert all characters to upper case, assuming that they will fit
   // in the buffer
-  Access<StringInputBuffer> buffer(&runtime_string_input_buffer);
+  Access<StringInputBuffer> buffer(&v8_context()->runtime_data_->
+    runtime_string_input_buffer_);
   buffer->Reset(s);
   unibrow::uchar chars[Converter::kMaxWidth];
   // We can assume that the string is not empty
@@ -3608,12 +3637,16 @@ static Object* ConvertCase(Arguments args,
 
 
 static Object* Runtime_StringToLowerCase(Arguments args) {
-  return ConvertCase<unibrow::ToLowercase>(args, &to_lower_mapping);
+  return ConvertCase<unibrow::ToLowercase>(
+    args,
+    &v8_context()->runtime_data_->to_lower_mapping_);
 }
 
 
 static Object* Runtime_StringToUpperCase(Arguments args) {
-  return ConvertCase<unibrow::ToUppercase>(args, &to_upper_mapping);
+  return ConvertCase<unibrow::ToUppercase>(
+    args,
+    &v8_context()->runtime_data_->to_upper_mapping_);
 }
 
 static inline bool IsTrimWhiteSpace(unibrow::uchar c) {
@@ -3649,7 +3682,8 @@ static Object* Runtime_StringTrim(Arguments args) {
 
 bool Runtime::IsUpperCaseChar(uint16_t ch) {
   unibrow::uchar chars[unibrow::ToUppercase::kMaxWidth];
-  int char_length = to_upper_mapping.get(ch, 0, chars);
+  int char_length = v8_context()->runtime_data_->
+    to_upper_mapping_.get(ch, 0, chars);
   return char_length == 0;
 }
 
@@ -3786,7 +3820,7 @@ static Object* Runtime_StringAdd(Arguments args) {
   ASSERT(args.length() == 2);
   CONVERT_CHECKED(String, str1, args[0]);
   CONVERT_CHECKED(String, str2, args[1]);
-  Counters::string_add_runtime.Increment();
+  INC_COUNTER(string_add_runtime);
   return Heap::AllocateConsString(str1, str2);
 }
 
@@ -4055,10 +4089,11 @@ static Object* Runtime_SmiLexicographicCompare(Arguments args) {
   NoHandleAllocation ha;
   ASSERT(args.length() == 2);
 
+  RuntimeData* const data = v8_context()->runtime_data_;
   // Arrays for the individual characters of the two Smis.  Smis are
   // 31 bit integers and 10 decimal digits are therefore enough.
-  static int x_elms[10];
-  static int y_elms[10];
+  int * const x_elms = data->x_elms_;
+  int * const y_elms = data->y_elms_;
 
   // Extract the integer values from the Smis.
   CONVERT_CHECKED(Smi, x, args[0]);
@@ -4132,8 +4167,9 @@ static Object* Runtime_StringCompare(Arguments args) {
   x->TryFlattenIfNotFlat();
   y->TryFlattenIfNotFlat();
 
-  static StringInputBuffer bufx;
-  static StringInputBuffer bufy;
+  RuntimeData* const data = v8_context()->runtime_data_;
+  StringInputBuffer& bufx = data->bufx_;
+  StringInputBuffer& bufy = data->bufy_;
   bufx.Reset(x);
   bufy.Reset(y);
   while (bufx.has_more() && bufy.has_more()) {
@@ -4505,8 +4541,8 @@ static Object* Runtime_NewObject(Arguments args) {
     function->shared()->set_construct_stub(*stub);
   }
 
-  Counters::constructed_objects.Increment();
-  Counters::constructed_objects_runtime.Increment();
+  INC_COUNTER(constructed_objects);
+  INC_COUNTER(constructed_objects_runtime);
 
   return *result;
 }
@@ -7962,10 +7998,18 @@ void Runtime::PerformGC(Object* result) {
   } else {
     // Handle last resort GC and make sure to allow future allocations
     // to grow the heap without causing GCs (if possible).
-    Counters::gc_last_resort_from_js.Increment();
+    INC_COUNTER(gc_last_resort_from_js);
     Heap::CollectAllGarbage(false);
   }
 }
 
+void Runtime::PostConstruct() {
+  v8_context()->runtime_data_ = new RuntimeData();
+}
+
+void Runtime::PreDestroy() {
+  delete v8_context()->runtime_data_;
+  v8_context()->runtime_data_ = NULL;
+}
 
 } }  // namespace v8::internal

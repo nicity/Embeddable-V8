@@ -43,7 +43,40 @@ namespace v8 {
 namespace internal {
 
 
-CodeGenerator* CodeGeneratorScope::top_ = NULL;
+CodeGeneratorData::CodeGeneratorData()
+  :top_(NULL),
+  compiling_deferred_code_(false),
+  frame_element_constants_list_(NULL),
+  result_constants_list_(NULL) {
+}
+
+CodeGeneratorData::~CodeGeneratorData() {
+  delete result_constants_list_;
+  delete frame_element_constants_list_;
+}
+
+// we cannot allocate ZoneObjectList because it goes to some zone unexpectedly,
+// and after that to unexpected death so we create ZoneObjectList as member of
+// malloced class and take the only field
+struct NonZoneObjectListHolder {
+  ZoneObjectList zone_list;
+  NonZoneObjectListHolder():zone_list(10) {
+    ASSERT(sizeof(NonZoneObjectListHolder) == sizeof(zone_list));
+    ASSERT(reinterpret_cast<int>(this) == reinterpret_cast<int>(&zone_list));
+  }
+};
+
+ZoneObjectList* CodeGeneratorData::result_constants_list() {
+  if (!result_constants_list_) result_constants_list_ = &(
+    (new NonZoneObjectListHolder())->zone_list);
+  return result_constants_list_;
+}
+
+ZoneObjectList* CodeGeneratorData::frame_element_constants_list() {
+  if (!frame_element_constants_list_) frame_element_constants_list_ =
+    &((new NonZoneObjectListHolder())->zone_list);
+  return frame_element_constants_list_;
+}
 
 
 DeferredCode::DeferredCode()
@@ -205,7 +238,7 @@ Handle<Code> CodeGenerator::MakeCodeEpilogue(FunctionLiteral* fun,
 #endif  // ENABLE_DISASSEMBLER
 
   if (!code.is_null()) {
-    Counters::total_compiled_code_size.Increment(code->instruction_size());
+    INCREMENT_COUNTER(total_compiled_code_size, code->instruction_size());
   }
   return code;
 }

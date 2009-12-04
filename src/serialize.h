@@ -289,6 +289,23 @@ class SnapshotByteSink {
   void PutInt(uintptr_t integer, const char* description);
 };
 
+class SerializerPrivateData;
+
+class SerializerData {
+ public:
+  SerializerPrivateData& private_data_;
+ private:
+  bool serialization_enabled_;
+  // Did we already make use of the fact that serialization was not enabled?
+  bool too_late_to_enable_now_;
+
+  SerializerData();
+  ~SerializerData();
+
+  friend class V8Context;
+  friend class Serializer;
+  DISALLOW_COPY_AND_ASSIGN(SerializerData);
+};
 
 class Serializer : public SerDes {
  public:
@@ -299,17 +316,24 @@ class Serializer : public SerDes {
   void VisitPointers(Object** start, Object** end);
 
   static void Enable() {
-    if (!serialization_enabled_) {
-      ASSERT(!too_late_to_enable_now_);
+    SerializerData& serializer_data = v8_context()->serializer_data_;
+    if (!serializer_data.serialization_enabled_) {
+      ASSERT(!serializer_data.too_late_to_enable_now_);
     }
-    serialization_enabled_ = true;
+    serializer_data.serialization_enabled_ = true;
   }
 
-  static void Disable() { serialization_enabled_ = false; }
+  static void Disable() {
+    v8_context()->serializer_data_.serialization_enabled_ = false;
+  }
   // Call this when you have made use of the fact that there is no serialization
   // going on.
-  static void TooLateToEnableNow() { too_late_to_enable_now_ = true; }
-  static bool enabled() { return serialization_enabled_; }
+  static void TooLateToEnableNow() {
+    v8_context()->serializer_data_.too_late_to_enable_now_ = true;
+  }
+  static bool enabled() {
+    return v8_context()->serializer_data_.serialization_enabled_;
+  }
 #ifdef DEBUG
   virtual void Synchronize(const char* tag);
 #endif
@@ -382,10 +406,6 @@ class Serializer : public SerDes {
   SnapshotByteSink* sink_;
   int current_root_index_;
   ExternalReferenceEncoder* external_reference_encoder_;
-  static bool serialization_enabled_;
-  // Did we already make use of the fact that serialization was not enabled?
-  static bool too_late_to_enable_now_;
-
   friend class ObjectSerializer;
   friend class Deserializer;
 

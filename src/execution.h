@@ -139,7 +139,51 @@ class Execution : public AllStatic {
 
 
 class ExecutionAccess;
+class StackGuardPrivateData;
 
+class StackGuardData {
+  class ThreadLocal {
+   public:
+    explicit ThreadLocal(int dummy) { }  // static data initialization only
+    ThreadLocal() { Clear(); }
+    // You should hold the ExecutionAccess lock when you call Initialize or
+    // Clear.
+    void Initialize();
+    void Clear();
+
+    // The stack limit is split into a JavaScript and a C++ stack limit. These
+    // two are the same except when running on a simulator where the C++ and
+    // JavaScript stacks are separate. Each of the two stack limits have two
+    // values. The one eith the real_ prefix is the actual stack limit
+    // set for the VM. The one without the real_ prefix has the same value as
+    // the actual stack limit except when there is an interruption (e.g. debug
+    // break or preemption) in which case it is lowered to make stack checks
+    // fail. Both the generated code and the runtime system check against the
+    // one without the real_ prefix.
+    uintptr_t real_jslimit_;  // Actual JavaScript stack limit set for the VM.
+    uintptr_t jslimit_;
+    uintptr_t real_climit_;  // Actual C++ stack limit set for the VM.
+    uintptr_t climit_;
+
+    int nesting_;
+    int postpone_interrupts_nesting_;
+    int interrupt_flags_;
+   private:
+    ThreadLocal(const ThreadLocal& another);
+  };
+
+  // Static state for stack guards.
+  ThreadLocal thread_local_;
+
+  StackGuardPrivateData* stack_guard_private_data_;
+
+  friend class V8Context;
+  friend class StackGuard;
+  friend class PostponeInterruptsScope;
+
+  StackGuardData();
+  DISALLOW_COPY_AND_ASSIGN(StackGuardData);
+};
 
 // StackGuard contains the handling of the limits that are used to limit the
 // number of nested invocations of JavaScript and the stack size used in each
@@ -181,19 +225,21 @@ class StackGuard : public AllStatic {
   // thread.  There are no locks protecting this, but it is assumed that you
   // have the global V8 lock if you are using multiple V8 threads.
   static uintptr_t climit() {
-    return thread_local_.climit_;
+    return v8_context()->stack_guard_data_.thread_local_.climit_;
   }
   static uintptr_t jslimit() {
-    return thread_local_.jslimit_;
+    return v8_context()->stack_guard_data_.thread_local_.jslimit_;
   }
   static uintptr_t real_jslimit() {
-    return thread_local_.real_jslimit_;
+    return v8_context()->stack_guard_data_.thread_local_.real_jslimit_;
   }
   static Address address_of_jslimit() {
-    return reinterpret_cast<Address>(&thread_local_.jslimit_);
+    return reinterpret_cast<Address>(
+      &v8_context()->stack_guard_data_.thread_local_.jslimit_);
   }
   static Address address_of_real_jslimit() {
-    return reinterpret_cast<Address>(&thread_local_.real_jslimit_);
+    return reinterpret_cast<Address>(
+      &v8_context()->stack_guard_data_.thread_local_.real_jslimit_);
   }
 
  private:
@@ -202,16 +248,20 @@ class StackGuard : public AllStatic {
 
   // You should hold the ExecutionAccess lock when calling this method.
   static void set_limits(uintptr_t value, const ExecutionAccess& lock) {
-    thread_local_.jslimit_ = value;
-    thread_local_.climit_ = value;
+    StackGuardData::ThreadLocal& thread_local =
+      v8_context()->stack_guard_data_.thread_local_;
+    thread_local.jslimit_ = value;
+    thread_local.climit_ = value;
     Heap::SetStackLimits();
   }
 
   // Reset limits to actual values. For example after handling interrupt.
   // You should hold the ExecutionAccess lock when calling this method.
   static void reset_limits(const ExecutionAccess& lock) {
-    thread_local_.jslimit_ = thread_local_.real_jslimit_;
-    thread_local_.climit_ = thread_local_.real_climit_;
+    StackGuardData::ThreadLocal& thread_local = v8_context()->
+      stack_guard_data_.thread_local_;
+    thread_local.jslimit_ = thread_local.real_jslimit_;
+    thread_local.climit_ = thread_local.real_climit_;
     Heap::SetStackLimits();
   }
 
@@ -229,37 +279,13 @@ class StackGuard : public AllStatic {
   static const uintptr_t kIllegalLimit = 0xfffffff8;
 #endif
 
-  class ThreadLocal {
-   public:
-    ThreadLocal() { Clear(); }
-    // You should hold the ExecutionAccess lock when you call Initialize or
-    // Clear.
-    void Initialize();
-    void Clear();
-
-    // The stack limit is split into a JavaScript and a C++ stack limit. These
-    // two are the same except when running on a simulator where the C++ and
-    // JavaScript stacks are separate. Each of the two stack limits have two
-    // values. The one eith the real_ prefix is the actual stack limit
-    // set for the VM. The one without the real_ prefix has the same value as
-    // the actual stack limit except when there is an interruption (e.g. debug
-    // break or preemption) in which case it is lowered to make stack checks
-    // fail. Both the generated code and the runtime system check against the
-    // one without the real_ prefix.
-    uintptr_t real_jslimit_;  // Actual JavaScript stack limit set for the VM.
-    uintptr_t jslimit_;
-    uintptr_t real_climit_;  // Actual C++ stack limit set for the VM.
-    uintptr_t climit_;
-
-    int nesting_;
-    int postpone_interrupts_nesting_;
-    int interrupt_flags_;
-  };
-
-  static ThreadLocal thread_local_;
+  static void PostConstruct();
+  static void PreDestroy();
+  friend class V8Context;
 
   friend class StackLimitCheck;
   friend class PostponeInterruptsScope;
+  friend class StackGuardData::ThreadLocal;
 };
 
 
@@ -284,12 +310,14 @@ class StackLimitCheck BASE_EMBEDDED {
 class PostponeInterruptsScope BASE_EMBEDDED {
  public:
   PostponeInterruptsScope() {
-    StackGuard::thread_local_.postpone_interrupts_nesting_++;
+    v8_context()->
+      stack_guard_data_.thread_local_.postpone_interrupts_nesting_++;
     StackGuard::DisableInterrupts();
   }
 
   ~PostponeInterruptsScope() {
-    if (--StackGuard::thread_local_.postpone_interrupts_nesting_ == 0) {
+    if (--v8_context()->
+        stack_guard_data_.thread_local_.postpone_interrupts_nesting_ == 0) {
       StackGuard::EnableInterrupts();
     }
   }

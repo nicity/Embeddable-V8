@@ -38,6 +38,29 @@ class FrameElement;
 class Result;
 class VirtualFrame;
 
+typedef ZoneList<Handle<Object> > ZoneObjectList;
+
+class CodeGeneratorData {
+  CodeGenerator* top_;
+  bool compiling_deferred_code_;
+  ZoneObjectList* result_constants_list_;
+  ZoneObjectList* frame_element_constants_list_;
+
+  ZoneObjectList* result_constants_list();
+  ZoneObjectList* frame_element_constants_list();
+
+  friend class CodeGeneratorScope;
+  friend class JumpTarget;
+  friend class V8Context;
+  friend class Result;
+  friend class FrameElement;
+
+  CodeGeneratorData();
+  ~CodeGeneratorData();
+
+  DISALLOW_COPY_AND_ASSIGN(CodeGeneratorData);
+};
+
 // -------------------------------------------------------------------------
 // Jump targets
 //
@@ -129,7 +152,7 @@ class JumpTarget : public ZoneObject {  // Shadows are dynamically allocated.
   void Call();
 
   static void set_compiling_deferred_code(bool flag) {
-    compiling_deferred_code_ = flag;
+    v8_context()->code_generator_data_.compiling_deferred_code_ = flag;
   }
 
  protected:
@@ -157,7 +180,6 @@ class JumpTarget : public ZoneObject {  // Shadows are dynamically allocated.
   void DoBind();
 
  private:
-  static bool compiling_deferred_code_;
 
   // Add a virtual frame reaching this labeled block via a forward jump,
   // and a corresponding merge code label.

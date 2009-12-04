@@ -32,6 +32,11 @@
 namespace v8 {
 namespace internal {
 
+RegExpStackData::RegExpStackData()
+  :thread_local_(),
+  static_offsets_vector_(NULL) {
+}
+
 RegExpStack::RegExpStack() {
   // Initialize, if not already initialized.
   RegExpStack::EnsureCapacity(0);
@@ -45,34 +50,41 @@ RegExpStack::~RegExpStack() {
 
 
 char* RegExpStack::ArchiveStack(char* to) {
-  size_t size = sizeof(thread_local_);
+  RegExpStackData::ThreadLocal & thread_local = v8_context()->
+      reg_exp_stack_data_.thread_local_;
+  size_t size = sizeof(RegExpStackData::ThreadLocal);
   memcpy(reinterpret_cast<void*>(to),
-         &thread_local_,
+         &thread_local,
          size);
-  thread_local_ = ThreadLocal();
+  thread_local = RegExpStackData::ThreadLocal();
   return to + size;
 }
 
 
 char* RegExpStack::RestoreStack(char* from) {
-  size_t size = sizeof(thread_local_);
-  memcpy(&thread_local_, reinterpret_cast<void*>(from), size);
+  size_t size = sizeof(RegExpStackData::ThreadLocal);
+  memcpy(&v8_context()->reg_exp_stack_data_.thread_local_,
+    reinterpret_cast<void*>(from), size);
   return from + size;
 }
 
 
 void RegExpStack::Reset() {
-  if (thread_local_.memory_size_ > kMinimumStackSize) {
-    DeleteArray(thread_local_.memory_);
-    thread_local_ = ThreadLocal();
+  RegExpStackData::ThreadLocal & thread_local = v8_context()->
+      reg_exp_stack_data_.thread_local_;
+  if (thread_local.memory_size_ > kMinimumStackSize) {
+    DeleteArray(thread_local.memory_);
+    thread_local = RegExpStackData::ThreadLocal();
   }
 }
 
 
-void RegExpStack::ThreadLocal::Free() {
-  if (thread_local_.memory_size_ > 0) {
-    DeleteArray(thread_local_.memory_);
-    thread_local_ = ThreadLocal();
+void RegExpStackData::ThreadLocal::Free() {
+  ThreadLocal & thread_local = v8_context()->
+      reg_exp_stack_data_.thread_local_;
+  if (thread_local.memory_size_ > 0) {
+    DeleteArray(thread_local.memory_);
+    thread_local = ThreadLocal();
   }
 }
 
@@ -80,24 +92,23 @@ void RegExpStack::ThreadLocal::Free() {
 Address RegExpStack::EnsureCapacity(size_t size) {
   if (size > kMaximumStackSize) return NULL;
   if (size < kMinimumStackSize) size = kMinimumStackSize;
-  if (thread_local_.memory_size_ < size) {
+  RegExpStackData::ThreadLocal & thread_local = v8_context()->
+      reg_exp_stack_data_.thread_local_;
+  if (thread_local.memory_size_ < size) {
     Address new_memory = NewArray<byte>(static_cast<int>(size));
-    if (thread_local_.memory_size_ > 0) {
+    if (thread_local.memory_size_ > 0) {
       // Copy original memory into top of new memory.
       memcpy(reinterpret_cast<void*>(
-          new_memory + size - thread_local_.memory_size_),
-             reinterpret_cast<void*>(thread_local_.memory_),
-             thread_local_.memory_size_);
-      DeleteArray(thread_local_.memory_);
+          new_memory + size - thread_local.memory_size_),
+             reinterpret_cast<void*>(thread_local.memory_),
+             thread_local.memory_size_);
+      DeleteArray(thread_local.memory_);
     }
-    thread_local_.memory_ = new_memory;
-    thread_local_.memory_size_ = size;
-    thread_local_.limit_ = new_memory + kStackLimitSlack * kPointerSize;
+    thread_local.memory_ = new_memory;
+    thread_local.memory_size_ = size;
+    thread_local.limit_ = new_memory + kStackLimitSlack * kPointerSize;
   }
-  return thread_local_.memory_ + thread_local_.memory_size_;
+  return thread_local.memory_ + thread_local.memory_size_;
 }
-
-
-RegExpStack::ThreadLocal RegExpStack::thread_local_;
 
 }}  // namespace v8::internal

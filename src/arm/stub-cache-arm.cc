@@ -788,7 +788,7 @@ Object* CallStubCompiler::CompileCallGlobal(JSObject* object,
   __ ldr(cp, FieldMemOperand(r1, JSFunction::kContextOffset));
 
   // Jump to the cached code (tail call).
-  __ IncrementCounter(&Counters::call_global_inline, 1, r2, r3);
+  __ IncrementCounter(&COUNTER(call_global_inline), 1, r2, r3);
   ASSERT(function->is_compiled());
   Handle<Code> code(function->code());
   ParameterCount expected(function->shared()->formal_parameter_count());
@@ -797,7 +797,7 @@ Object* CallStubCompiler::CompileCallGlobal(JSObject* object,
 
   // Handle call cache miss.
   __ bind(&miss);
-  __ IncrementCounter(&Counters::call_global_inline_miss, 1, r1, r3);
+  __ IncrementCounter(&COUNTER(call_global_inline_miss), 1, r1, r3);
   Handle<Code> ic = ComputeCallMiss(arguments().immediate());
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
@@ -967,12 +967,12 @@ Object* StoreStubCompiler::CompileStoreGlobal(GlobalObject* object,
   __ mov(r2, Operand(Handle<JSGlobalPropertyCell>(cell)));
   __ str(r0, FieldMemOperand(r2, JSGlobalPropertyCell::kValueOffset));
 
-  __ IncrementCounter(&Counters::named_store_global_inline, 1, r1, r3);
+  __ IncrementCounter(&COUNTER(named_store_global_inline), 1, r1, r3);
   __ Ret();
 
   // Handle store cache miss.
   __ bind(&miss);
-  __ IncrementCounter(&Counters::named_store_global_inline_miss, 1, r1, r3);
+  __ IncrementCounter(&COUNTER(named_store_global_inline_miss), 1, r1, r3);
   Handle<Code> ic(Builtins::builtin(Builtins::StoreIC_Miss));
   __ Jump(ic, RelocInfo::CODE_TARGET);
 
@@ -1114,11 +1114,11 @@ Object* LoadStubCompiler::CompileLoadGlobal(JSObject* object,
     __ b(eq, &miss);
   }
 
-  __ IncrementCounter(&Counters::named_load_global_inline, 1, r1, r3);
+  __ IncrementCounter(&COUNTER(named_load_global_inline), 1, r1, r3);
   __ Ret();
 
   __ bind(&miss);
-  __ IncrementCounter(&Counters::named_load_global_inline_miss, 1, r1, r3);
+  __ IncrementCounter(&COUNTER(named_load_global_inline_miss), 1, r1, r3);
   GenerateLoadMiss(masm(), Code::LOAD_IC);
 
   // Return the generated code.
@@ -1268,7 +1268,7 @@ Object* KeyedLoadStubCompiler::CompileLoadStringLength(String* name) {
   //  -- sp[4] : receiver
   // -----------------------------------
   Label miss;
-  __ IncrementCounter(&Counters::keyed_load_string_length, 1, r1, r3);
+  __ IncrementCounter(&COUNTER(keyed_load_string_length), 1, r1, r3);
 
   __ ldr(r2, MemOperand(sp));
   __ ldr(r0, MemOperand(sp, kPointerSize));  // receiver
@@ -1278,7 +1278,7 @@ Object* KeyedLoadStubCompiler::CompileLoadStringLength(String* name) {
 
   GenerateLoadStringLength2(masm(), r0, r1, r3, &miss);
   __ bind(&miss);
-  __ DecrementCounter(&Counters::keyed_load_string_length, 1, r1, r3);
+  __ DecrementCounter(&COUNTER(keyed_load_string_length), 1, r1, r3);
 
   GenerateLoadMiss(masm(), Code::KEYED_LOAD_IC);
 
@@ -1311,7 +1311,7 @@ Object* KeyedStoreStubCompiler::CompileStoreField(JSObject* object,
   // -----------------------------------
   Label miss;
 
-  __ IncrementCounter(&Counters::keyed_store_field, 1, r1, r3);
+  __ IncrementCounter(&COUNTER(keyed_store_field), 1, r1, r3);
 
   // Check that the name has not changed.
   __ cmp(r2, Operand(Handle<String>(name)));
@@ -1329,7 +1329,7 @@ Object* KeyedStoreStubCompiler::CompileStoreField(JSObject* object,
                      &miss);
   __ bind(&miss);
 
-  __ DecrementCounter(&Counters::keyed_store_field, 1, r1, r3);
+  __ DecrementCounter(&COUNTER(keyed_store_field), 1, r1, r3);
   __ mov(r2, Operand(Handle<String>(name)));  // restore name register.
   Handle<Code> ic(Builtins::builtin(Builtins::KeyedStoreIC_Miss));
   __ Jump(ic, RelocInfo::CODE_TARGET);
@@ -1466,8 +1466,8 @@ Object* ConstructStubCompiler::CompileConstructStub(
   // Remove caller arguments and receiver from the stack and return.
   __ add(sp, sp, Operand(r1, LSL, kPointerSizeLog2));
   __ add(sp, sp, Operand(kPointerSize));
-  __ IncrementCounter(&Counters::constructed_objects, 1, r1, r2);
-  __ IncrementCounter(&Counters::constructed_objects_stub, 1, r1, r2);
+  __ IncrementCounter(&COUNTER(constructed_objects), 1, r1, r2);
+  __ IncrementCounter(&COUNTER(constructed_objects_stub), 1, r1, r2);
   __ Jump(lr);
 
   // Jump to the generic stub in case the specialized code cannot handle the

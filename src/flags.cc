@@ -338,11 +338,13 @@ static Flag* FindFlag(const char* name) {
   return NULL;
 }
 
+static MutexLockAdapter flag_list_lock(OS::CreateMutex());
 
 // static
 int FlagList::SetFlagsFromCommandLine(int* argc,
                                       char** argv,
                                       bool remove_flags) {
+  V8SharedStateLocker flags_list_locker(&flag_list_lock);
   // parse arguments
   for (int i = 1; i < *argc;) {
     int j = i;  // j > 0
@@ -469,6 +471,7 @@ static char* SkipBlackSpace(char* p) {
 
 // static
 int FlagList::SetFlagsFromString(const char* str, int len) {
+  V8SharedStateLocker flags_list_locker(&flag_list_lock);
   // make a 0-terminated copy of str
   char* copy0 = NewArray<char>(len + 1);
   memcpy(copy0, str, len);

@@ -158,15 +158,15 @@ namespace internal {
   SC(string_add_native, V8.StringAddNative)
 
 // This file contains all the v8 counters that are in use.
-class Counters : AllStatic {
+class Counters {
  public:
 #define HT(name, caption) \
-  static HistogramTimer name;
+  HistogramTimer name;
   HISTOGRAM_TIMER_LIST(HT)
 #undef HT
 
 #define SC(name, caption) \
-  static StatsCounter name;
+  StatsCounter name;
   STATS_COUNTER_LIST_1(SC)
   STATS_COUNTER_LIST_2(SC)
 #undef SC
@@ -186,9 +186,18 @@ class Counters : AllStatic {
   };
 
   // Sliding state window counters.
-  static StatsCounter state_counters[];
+  StatsCounter* const state_counters;
+ private:
+  Counters();
+  friend class V8Context;
+  DISALLOW_COPY_AND_ASSIGN(Counters);
 };
 
+#define COUNTER(name) v8::v8_context()->counters_.name
+#define INC_COUNTER(name) COUNTER(name).Increment()
+#define DEC_COUNTER(name) COUNTER(name).Decrement()
+#define INCREMENT_COUNTER(name, amount) COUNTER(name).Increment(amount)
+#define DECREMENT_COUNTER(name, amount) COUNTER(name).Decrement(amount)
 } }  // namespace v8::internal
 
 #endif  // V8_V8_COUNTERS_H_

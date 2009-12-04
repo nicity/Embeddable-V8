@@ -49,8 +49,11 @@ class Disassembler : public AllStatic {
   // not be decoded.  The number of characters written is written into
   // the out parameter char_count.
   static int Decode(FILE* f, byte* pc, int* char_count);
-};
 
+  friend class V8Context;
+  static void PostConstruct();
+  static void PreDestroy();
+};
 } }  // namespace v8::internal
 
 #endif  // V8_DISASSEMBLER_H_

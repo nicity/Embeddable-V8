@@ -24,13 +24,19 @@
 // THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#define V8_TEST
 
+#ifdef V8_TEST
+#define WIN32
+#include <../src/v8.h>
+#include <../src/v8-global-context.h>
+#else
 #include <v8.h>
 #include <fcntl.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-
+#endif
 
 void RunShell(v8::Handle<v8::Context> context);
 bool ExecuteString(v8::Handle<v8::String> source,
@@ -47,7 +53,6 @@ void ReportException(v8::TryCatch* handler);
 
 
 int RunMain(int argc, char* argv[]) {
-  v8::V8::SetFlagsFromCommandLine(&argc, argv, true);
   v8::HandleScope handle_scope;
   // Create a template for the global object.
   v8::Handle<v8::ObjectTemplate> global = v8::ObjectTemplate::New();
@@ -102,11 +107,56 @@ int RunMain(int argc, char* argv[]) {
   return 0;
 }
 
+#ifdef V8_TEST
+v8::AllowSeveralV8InstancesInProcess v8_please;
+
+class V8Runner: public v8::internal::Thread {
+ public:
+  V8Runner(int argc, char* argv[])
+    :argc_(argc), argv_(argv) {
+  }
+
+  int result() const { return result_; }
+ private:
+  int argc_;
+  char** const argv_;
+  int result_;
+
+  virtual void Run() {
+    v8::V8ContextProvider v8_context_provider;
+    v8::V8ContextBinder v8_context_binder(v8_context_provider);
+    result_ = RunMain(argc_, argv_);
+    v8::V8::Dispose();
+  }
+
+  DISALLOW_COPY_AND_ASSIGN(V8Runner);
+};
+#endif
 
 int main(int argc, char* argv[]) {
+  v8::V8::SetFlagsFromCommandLine(&argc, argv, true);
+#ifdef V8_TEST
+  const int kAdditionalParallelThreads = 0;
+  V8Runner** runners = new V8Runner*[kAdditionalParallelThreads];
+  for (int i = 0; i < kAdditionalParallelThreads; ++i) {
+    runners[i] = new V8Runner(argc, argv);
+    runners[i]->Start();
+  }
+#endif
+
   int result = RunMain(argc, argv);
   v8::V8::Dispose();
-  return result;
+
+  bool allResultsTheSame = true;
+#ifdef V8_TEST
+  for (int i = 0; i < kAdditionalParallelThreads; ++i) {
+    runners[i]->Join();
+    if (result != runners[i]->result()) {
+      allResultsTheSame = false;
+    }
+  }
+#endif
+  return allResultsTheSame ? result : -1;
 }
 
 

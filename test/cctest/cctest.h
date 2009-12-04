@@ -29,6 +29,7 @@
 #define CCTEST_H_
 
 #include "v8.h"
+#include "v8-global-context.h"
 
 #ifndef TEST
 #define TEST(Name)                                                       \
@@ -56,7 +57,7 @@ class CcTest {
   typedef void (TestFunction)();
   CcTest(TestFunction* callback, const char* file, const char* name,
          const char* dependency, bool enabled);
-  void Run() { callback_(); }
+  void Run();
   static int test_count();
   static CcTest* last() { return last_; }
   CcTest* prev() { return prev_; }
@@ -72,6 +73,19 @@ class CcTest {
   bool enabled_;
   static CcTest* last_;
   CcTest* prev_;
+};
+
+class V8Runner: public v8::internal::Thread {
+  CcTest::TestFunction* callback_;
+
+  virtual void Run() {
+    v8::V8ContextProvider v8context_provider;
+    v8::V8ContextBinder v8context_binder(v8context_provider);
+    callback_();
+  }
+ public:
+  explicit V8Runner(CcTest::TestFunction* callback)
+     :callback_(callback) {}
 };
 
 // Switches between all the Api tests using the threading support.

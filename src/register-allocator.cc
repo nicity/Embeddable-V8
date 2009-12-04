@@ -45,8 +45,7 @@ Result::Result(Register reg) {
 
 
 Result::ZoneObjectList* Result::ConstantList() {
-  static ZoneObjectList list(10);
-  return &list;
+  return v8_context()->code_generator_data_.result_constants_list();
 }
 
 

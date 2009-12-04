@@ -152,8 +152,42 @@ namespace internal {
 
 class ObjectVisitor;
 
+class BuiltinTypes {
+ public:
+    enum Name {
+  #define DEF_ENUM_C(name) name,
+  #define DEF_ENUM_A(name, kind, state) name,
+      BUILTIN_LIST_C(DEF_ENUM_C)
+      BUILTIN_LIST_A(DEF_ENUM_A)
+      BUILTIN_LIST_DEBUG_A(DEF_ENUM_A)
+  #undef DEF_ENUM_C
+  #undef DEF_ENUM_A
+      builtin_count
+    };
+};
 
-class Builtins : public AllStatic {
+class BuiltinsData: public BuiltinTypes {
+ public:
+  // TODO(1238487): This is a nasty hack. We need to improve the way we
+  // call builtins considerable to get rid of this and the hairy macros
+  // in builtins.cc.
+  Object* builtin_passed_function_;
+ private:
+  // Note: These are always Code objects, but to conform with
+  // IterateBuiltins() above which assumes Object**'s for the callback
+  // function f, we use an Object* array here.
+  Object* builtins_[builtin_count];
+  const char* names_[builtin_count];
+  bool is_initialized_;
+
+  friend class V8Context;
+  friend class Builtins;
+
+  BuiltinsData();
+  DISALLOW_COPY_AND_ASSIGN(BuiltinsData);
+};
+
+class Builtins : public AllStatic, public BuiltinTypes {
  public:
   // Generate all builtin code objects. Should be called once during
   // VM initialization.
@@ -165,17 +199,6 @@ class Builtins : public AllStatic {
 
   // Disassembler support.
   static const char* Lookup(byte* pc);
-
-  enum Name {
-#define DEF_ENUM_C(name) name,
-#define DEF_ENUM_A(name, kind, state) name,
-    BUILTIN_LIST_C(DEF_ENUM_C)
-    BUILTIN_LIST_A(DEF_ENUM_A)
-    BUILTIN_LIST_DEBUG_A(DEF_ENUM_A)
-#undef DEF_ENUM_C
-#undef DEF_ENUM_A
-    builtin_count
-  };
 
   enum CFunctionId {
 #define DEF_ENUM_C(name) c_##name,
@@ -194,11 +217,13 @@ class Builtins : public AllStatic {
   static Code* builtin(Name name) {
     // Code::cast cannot be used here since we access builtins
     // during the marking phase of mark sweep. See IC::Clear.
-    return reinterpret_cast<Code*>(builtins_[name]);
+    return reinterpret_cast<Code*>(
+      v8_context()->builtins_data_.builtins_[name]);
   }
 
   static Address builtin_address(Name name) {
-    return reinterpret_cast<Address>(&builtins_[name]);
+    return reinterpret_cast<Address>(
+      &v8_context()->builtins_data_.builtins_[name]);
   }
 
   static Address c_function_address(CFunctionId id) {
@@ -210,17 +235,11 @@ class Builtins : public AllStatic {
   static Handle<Code> GetCode(JavaScript id, bool* resolved);
   static int NumberOfJavaScriptBuiltins() { return id_count; }
 
-  static Object* builtin_passed_function;
 
  private:
   // The external C++ functions called from the code.
   static Address c_functions_[cfunction_count];
 
-  // Note: These are always Code objects, but to conform with
-  // IterateBuiltins() above which assumes Object**'s for the callback
-  // function f, we use an Object* array here.
-  static Object* builtins_[builtin_count];
-  static const char* names_[builtin_count];
   static const char* javascript_names_[id_count];
   static int javascript_argc_[id_count];
 

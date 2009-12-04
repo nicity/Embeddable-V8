@@ -29,9 +29,21 @@
 #include "cctest.h"
 #include "debug.h"
 
-
+v8::AllowSeveralV8InstancesInProcess v8_please;
 CcTest* CcTest::last_ = NULL;
 
+void CcTest::Run() {
+  const int kAdditionalParallelThreads = 0;
+  V8Runner** runners = new V8Runner*[kAdditionalParallelThreads];
+  for (int i = 0; i < kAdditionalParallelThreads; ++i) {
+    (runners[i] = new V8Runner(callback_))->Start();
+  }
+  callback_();
+
+  for (int i = 0; i < kAdditionalParallelThreads; ++i) {
+    runners[i]->Join();
+  }
+}
 
 CcTest::CcTest(TestFunction* callback, const char* file, const char* name,
                const char* dependency, bool enabled)

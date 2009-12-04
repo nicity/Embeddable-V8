@@ -160,7 +160,7 @@ class InstructionTable {
   InstructionDesc instructions_[256];
   void Clear();
   void Init();
-  void CopyTable(ByteMnemonic bm[], InstructionType type);
+  void CopyTable(const ByteMnemonic bm[], InstructionType type);
   void SetTableRange(InstructionType type,
                      byte start,
                      byte end,
@@ -199,7 +199,8 @@ void InstructionTable::Init() {
 }
 
 
-void InstructionTable::CopyTable(ByteMnemonic bm[], InstructionType type) {
+void InstructionTable::CopyTable(const ByteMnemonic bm[],
+  InstructionType type) {
   for (int i = 0; bm[i].b >= 0; i++) {
     InstructionDesc* id = &instructions_[bm[i].b];
     id->mnem = bm[i].mnem;
@@ -1217,7 +1218,8 @@ static const char* xmm_regs[8] = {
 
 
 const char* NameConverter::NameOfAddress(byte* addr) const {
-  static v8::internal::EmbeddedVector<char, 32> tmp_buffer;
+  v8::internal::EmbeddedVector<char, 32>& tmp_buffer =
+    v8::v8_context()->disassembler_data_->tmp_buffer_;
   v8::internal::OS::SNPrintF(tmp_buffer, "%p", addr);
   return tmp_buffer.start();
 }

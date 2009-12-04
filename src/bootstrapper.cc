@@ -91,20 +91,53 @@ class SourceCodeCache BASE_EMBEDDED {
   DISALLOW_COPY_AND_ASSIGN(SourceCodeCache);
 };
 
-static SourceCodeCache natives_cache(Script::TYPE_NATIVE);
-static SourceCodeCache extensions_cache(Script::TYPE_EXTENSION);
-// This is for delete, not delete[].
-static List<char*>* delete_these_non_arrays_on_tear_down = NULL;
+class Genesis;
 
+class BootstrapperPrivateData {
+ public:
+  SourceCodeCache natives_cache_;
+  SourceCodeCache extensions_cache_;
+  Genesis* current_;
+  // This is for delete, not delete[].
+  List<char*>* delete_these_non_arrays_on_tear_down_;
+
+  List<Object*> code_;
+  List<const char*> name_;
+  List<int> pc_;
+  List<uint32_t> flags_;
+
+  BootstrapperPrivateData()
+    :delete_these_non_arrays_on_tear_down_(NULL),
+    current_(NULL),
+    extensions_cache_(Script::TYPE_EXTENSION),
+    natives_cache_(Script::TYPE_NATIVE),
+    code_(0),
+    name_(0),
+    pc_(0),
+    flags_(0) {
+  }
+
+  DISALLOW_COPY_AND_ASSIGN(BootstrapperPrivateData);
+};
+
+BootstrapperData::BootstrapperData()
+  :private_data_(*new BootstrapperPrivateData()) {
+}
+
+BootstrapperData::~BootstrapperData() {
+  delete &private_data_;
+}
 
 NativesExternalStringResource::NativesExternalStringResource(const char* source)
     : data_(source), length_(StrLength(source)) {
-  if (delete_these_non_arrays_on_tear_down == NULL) {
-    delete_these_non_arrays_on_tear_down = new List<char*>(2);
+  BootstrapperPrivateData& data = v8_context()->bootstrapper_data_.
+    private_data_;
+  if (data.delete_these_non_arrays_on_tear_down_ == NULL) {
+    data.delete_these_non_arrays_on_tear_down_ = new List<char*>(2);
   }
   // The resources are small objects and we only make a fixed number of
   // them, but let's clean them up on exit for neatness.
-  delete_these_non_arrays_on_tear_down->
+  data.delete_these_non_arrays_on_tear_down_->
       Add(reinterpret_cast<char*>(this));
 }
 
@@ -134,35 +167,41 @@ Handle<String> Bootstrapper::NativesSourceLookup(int index) {
 
 bool Bootstrapper::NativesCacheLookup(Vector<const char> name,
                                       Handle<JSFunction>* handle) {
-  return natives_cache.Lookup(name, handle);
+  return v8_context()->bootstrapper_data_.
+    private_data_.natives_cache_.Lookup(name, handle);
 }
 
 
 void Bootstrapper::NativesCacheAdd(Vector<const char> name,
                                    Handle<JSFunction> fun) {
-  natives_cache.Add(name, fun);
+  v8_context()->bootstrapper_data_.
+    private_data_.natives_cache_.Add(name, fun);
 }
 
 
 void Bootstrapper::Initialize(bool create_heap_objects) {
-  natives_cache.Initialize(create_heap_objects);
-  extensions_cache.Initialize(create_heap_objects);
+  BootstrapperPrivateData& data = v8_context()->bootstrapper_data_.
+    private_data_;
+  data.natives_cache_.Initialize(create_heap_objects);
+  data.extensions_cache_.Initialize(create_heap_objects);
 }
 
 
 void Bootstrapper::TearDown() {
-  if (delete_these_non_arrays_on_tear_down != NULL) {
-    int len = delete_these_non_arrays_on_tear_down->length();
+  BootstrapperPrivateData& data = v8_context()->bootstrapper_data_.
+    private_data_;
+  if (data.delete_these_non_arrays_on_tear_down_ != NULL) {
+    int len = data.delete_these_non_arrays_on_tear_down_->length();
     ASSERT(len < 20);  // Don't use this mechanism for unbounded allocations.
     for (int i = 0; i < len; i++) {
-      delete delete_these_non_arrays_on_tear_down->at(i);
+      delete data.delete_these_non_arrays_on_tear_down_->at(i);
     }
-    delete delete_these_non_arrays_on_tear_down;
-    delete_these_non_arrays_on_tear_down = NULL;
+    delete data.delete_these_non_arrays_on_tear_down_;
+    data.delete_these_non_arrays_on_tear_down_ = NULL;
   }
 
-  natives_cache.Initialize(false);  // Yes, symmetrical
-  extensions_cache.Initialize(false);
+  data.natives_cache_.Initialize(false);  // Yes, symmetrical
+  data.extensions_cache_.Initialize(false);
 }
 
 
@@ -178,31 +217,21 @@ class PendingFixups : public AllStatic {
   static void Iterate(ObjectVisitor* v);
 
  private:
-  static List<Object*> code_;
-  static List<const char*> name_;
-  static List<int> pc_;
-  static List<uint32_t> flags_;
-
   static void Clear();
 };
-
-
-List<Object*> PendingFixups::code_(0);
-List<const char*> PendingFixups::name_(0);
-List<int> PendingFixups::pc_(0);
-List<uint32_t> PendingFixups::flags_(0);
-
 
 void PendingFixups::Add(Code* code, MacroAssembler* masm) {
   // Note this code is not only called during bootstrapping.
   List<MacroAssembler::Unresolved>* unresolved = masm->unresolved();
   int n = unresolved->length();
+  BootstrapperPrivateData& data = v8_context()->bootstrapper_data_.
+    private_data_;
   for (int i = 0; i < n; i++) {
     const char* name = unresolved->at(i).name;
-    code_.Add(code);
-    name_.Add(name);
-    pc_.Add(unresolved->at(i).pc);
-    flags_.Add(unresolved->at(i).flags);
+    data.code_.Add(code);
+    data.name_.Add(name);
+    data.pc_.Add(unresolved->at(i).pc);
+    data.flags_.Add(unresolved->at(i).flags);
     LOG(StringEvent("unresolved", name));
   }
 }
@@ -210,12 +239,14 @@ void PendingFixups::Add(Code* code, MacroAssembler* masm) {
 
 bool PendingFixups::Process(Handle<JSBuiltinsObject> builtins) {
   HandleScope scope;
+  BootstrapperPrivateData& data = v8_context()->bootstrapper_data_.
+    private_data_;
   // NOTE: Extra fixups may be added to the list during the iteration
   // due to lazy compilation of functions during the processing. Do not
   // cache the result of getting the length of the code list.
-  for (int i = 0; i < code_.length(); i++) {
-    const char* name = name_[i];
-    uint32_t flags = flags_[i];
+  for (int i = 0; i < data.code_.length(); i++) {
+    const char* name = data.name_[i];
+    uint32_t flags = data.flags_[i];
     Handle<String> symbol = Factory::LookupAsciiSymbol(name);
     Object* o = builtins->GetProperty(*symbol);
 #ifdef DEBUG
@@ -235,8 +266,8 @@ bool PendingFixups::Process(Handle<JSBuiltinsObject> builtins) {
         return false;
       }
     }
-    Code* code = Code::cast(code_[i]);
-    Address pc = code->instruction_start() + pc_[i];
+    Code* code = Code::cast(data.code_[i]);
+    Address pc = code->instruction_start() + data.pc_[i];
     RelocInfo target(pc, RelocInfo::CODE_TARGET, 0);
     bool use_code_object = Bootstrapper::FixupFlagsUseCodeObject::decode(flags);
     if (use_code_object) {
@@ -264,16 +295,20 @@ bool PendingFixups::Process(Handle<JSBuiltinsObject> builtins) {
 
 
 void PendingFixups::Clear() {
-  code_.Clear();
-  name_.Clear();
-  pc_.Clear();
-  flags_.Clear();
+  BootstrapperPrivateData& data = v8_context()->bootstrapper_data_.
+    private_data_;
+  data.code_.Clear();
+  data.name_.Clear();
+  data.pc_.Clear();
+  data.flags_.Clear();
 }
 
 
 void PendingFixups::Iterate(ObjectVisitor* v) {
-  if (!code_.is_empty()) {
-    v->VisitPointers(&code_[0], &code_[0] + code_.length());
+  BootstrapperPrivateData& data = v8_context()->bootstrapper_data_.
+    private_data_;
+  if (!data.code_.is_empty()) {
+    v->VisitPointers(&data.code_[0], &data.code_[0] + data.code_.length());
   }
 }
 
@@ -288,7 +323,9 @@ class Genesis BASE_EMBEDDED {
   Handle<Context> result() { return result_; }
 
   Genesis* previous() { return previous_; }
-  static Genesis* current() { return current_; }
+  static Genesis* current() {
+    return v8_context()->bootstrapper_data_.private_data_.current_;
+  }
 
   // Support for thread preemption.
   static int ArchiveSpacePerThread();
@@ -302,7 +339,6 @@ class Genesis BASE_EMBEDDED {
   // triggered during environment creation there may be weak handle
   // processing callbacks which may create new environments.
   Genesis* previous_;
-  static Genesis* current_;
 
   Handle<Context> global_context() { return global_context_; }
 
@@ -347,13 +383,14 @@ class Genesis BASE_EMBEDDED {
   Handle<Context> result_;
 };
 
-Genesis* Genesis::current_ = NULL;
 
 
 void Bootstrapper::Iterate(ObjectVisitor* v) {
-  natives_cache.Iterate(v);
+  BootstrapperPrivateData& data = v8_context()->bootstrapper_data_.
+    private_data_;
+  data.natives_cache_.Iterate(v);
   v->Synchronize("NativesCache");
-  extensions_cache.Iterate(v);
+  data.extensions_cache_.Iterate(v);
   v->Synchronize("Extensions");
   PendingFixups::Iterate(v);
   v->Synchronize("PendingFixups");
@@ -400,8 +437,9 @@ void Bootstrapper::DetachGlobal(Handle<Context> env) {
 
 
 Genesis::~Genesis() {
-  ASSERT(current_ == this);
-  current_ = previous_;
+  Genesis* & current = v8_context()->bootstrapper_data_.private_data_.current_;
+  ASSERT(current == this);
+  current = previous_;
 }
 
 
@@ -893,8 +931,8 @@ bool Genesis::CompileNative(Vector<const char> name, Handle<String> source) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
   Debugger::set_compiling_natives(true);
 #endif
-  bool result =
-      CompileScriptCached(name, source, &natives_cache, NULL, true);
+  bool result = CompileScriptCached(name, source,
+    &v8_context()->bootstrapper_data_.private_data_.natives_cache_, NULL, true);
   ASSERT(Top::has_pending_exception() != result);
   if (!result) Top::clear_pending_exception();
 #ifdef ENABLE_DEBUGGER_SUPPORT
@@ -1270,7 +1308,10 @@ bool Genesis::InstallSpecialObjects() {
 }
 
 
+static MutexLockAdapter genesis_lock_adapter(OS::CreateMutex());
+
 bool Genesis::InstallExtensions(v8::ExtensionConfiguration* extensions) {
+  V8SharedStateLocker locker(&genesis_lock_adapter);
   // Clear coloring of extension list
   v8::RegisteredExtension* current = v8::RegisteredExtension::first_extension();
   while (current != NULL) {
@@ -1339,10 +1380,12 @@ bool Genesis::InstallExtension(v8::RegisteredExtension* current) {
   }
   Vector<const char> source = CStrVector(extension->source());
   Handle<String> source_code = Factory::NewStringFromAscii(source);
-  bool result = CompileScriptCached(CStrVector(extension->name()),
-                                    source_code,
-                                    &extensions_cache, extension,
-                                    false);
+  bool result = CompileScriptCached(
+    CStrVector(extension->name()),
+    source_code,
+    &v8_context()->bootstrapper_data_.private_data_.extensions_cache_,
+    extension,
+    false);
   ASSERT(Top::has_pending_exception() != result);
   if (!result) {
     Top::clear_pending_exception();
@@ -1575,8 +1618,9 @@ Genesis::Genesis(Handle<Object> global_object,
   // Link this genesis object into the stacked genesis chain. This
   // must be done before any early exits because the destructor
   // will always do unlinking.
-  previous_ = current_;
-  current_  = this;
+  Genesis* & current = v8_context()->bootstrapper_data_.private_data_.current_;
+  previous_ = current;
+  current  = this;
   result_ = Handle<Context>::null();
 
   // If V8 isn't running and cannot be initialized, just return.
@@ -1632,22 +1676,24 @@ void Bootstrapper::FreeThreadResources() {
 
 // Reserve space for statics needing saving and restoring.
 int Genesis::ArchiveSpacePerThread() {
-  return sizeof(current_);
+  return sizeof(v8_context()->bootstrapper_data_.private_data_.current_);
 }
 
 
 // Archive statics that are thread local.
 char* Genesis::ArchiveState(char* to) {
-  *reinterpret_cast<Genesis**>(to) = current_;
-  current_ = NULL;
-  return to + sizeof(current_);
+  Genesis* & current = v8_context()->bootstrapper_data_.private_data_.current_;
+  *reinterpret_cast<Genesis**>(to) = current;
+  current = NULL;
+  return to + sizeof(current);
 }
 
 
 // Restore statics that are thread local.
 char* Genesis::RestoreState(char* from) {
-  current_ = *reinterpret_cast<Genesis**>(from);
-  return from + sizeof(current_);
+  Genesis* & current = v8_context()->bootstrapper_data_.private_data_.current_;
+  current = *reinterpret_cast<Genesis**>(from);
+  return from + sizeof(current);
 }
 
 } }  // namespace v8::internal

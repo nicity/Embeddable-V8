@@ -101,21 +101,22 @@ namespace internal {
 class CodeGeneratorScope BASE_EMBEDDED {
  public:
   explicit CodeGeneratorScope(CodeGenerator* cgen) {
-    previous_ = top_;
-    top_ = cgen;
+    CodeGeneratorData& code_generator_data = v8_context()->code_generator_data_;
+    previous_ = code_generator_data.top_;
+    code_generator_data.top_ = cgen;
   }
 
   ~CodeGeneratorScope() {
-    top_ = previous_;
+    v8_context()->code_generator_data_.top_ = previous_;
   }
 
   static CodeGenerator* Current() {
-    ASSERT(top_ != NULL);
-    return top_;
+    CodeGeneratorData& code_generator_data = v8_context()->code_generator_data_;
+    ASSERT(code_generator_data.top_ != NULL);
+    return code_generator_data.top_;
   }
 
  private:
-  static CodeGenerator* top_;
   CodeGenerator* previous_;
 };
 

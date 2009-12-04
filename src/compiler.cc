@@ -41,6 +41,7 @@
 namespace v8 {
 namespace internal {
 
+CompilerData::CompilerData() {}
 
 class CodeGenSelector: public AstVisitor {
  public:
@@ -98,7 +99,7 @@ static Handle<Code> MakeCode(FunctionLiteral* literal,
     // Compute top scope and allocate variables. For lazy compilation
     // the top scope only contains the single lazily compiled function,
     // so this doesn't re-allocate variables repeatedly.
-    HistogramTimerScope timer(&Counters::variable_allocation);
+    HistogramTimerScope timer(&COUNTER(variable_allocation));
     Scope* top = literal->scope();
     while (top->outer_scope() != NULL) top = top->outer_scope();
     top->AllocateVariables(context);
@@ -220,8 +221,8 @@ static Handle<JSFunction> MakeFunction(bool is_global,
   // rest of the function into account to avoid overlap with the
   // parsing statistics.
   HistogramTimer* rate = is_eval
-      ? &Counters::compile_eval
-      : &Counters::compile;
+      ? &COUNTER(compile_eval)
+      : &COUNTER(compile);
   HistogramTimerScope timer(rate);
 
   // Compile the code.
@@ -278,18 +279,14 @@ static Handle<JSFunction> MakeFunction(bool is_global,
   return fun;
 }
 
-
-static StaticResource<SafeStringInputBuffer> safe_string_input_buffer;
-
-
 Handle<JSFunction> Compiler::Compile(Handle<String> source,
                                      Handle<Object> script_name,
                                      int line_offset, int column_offset,
                                      v8::Extension* extension,
                                      ScriptDataImpl* input_pre_data) {
   int source_length = source->length();
-  Counters::total_load_size.Increment(source_length);
-  Counters::total_compile_size.Increment(source_length);
+  INCREMENT_COUNTER(total_load_size, source_length);
+  INCREMENT_COUNTER(total_compile_size, source_length);
 
   // The VM is in the COMPILER state until exiting this function.
   VMState state(COMPILER);
@@ -307,7 +304,8 @@ Handle<JSFunction> Compiler::Compile(Handle<String> source,
     // No cache entry found. Do pre-parsing and compile the script.
     ScriptDataImpl* pre_data = input_pre_data;
     if (pre_data == NULL && source_length >= FLAG_min_preparse_length) {
-      Access<SafeStringInputBuffer> buf(&safe_string_input_buffer);
+      Access<SafeStringInputBuffer> buf(
+        &v8_context()->compiler_data_.safe_string_input_buffer_);
       buf->Reset(source.location());
       pre_data = PreParse(source, buf.value(), extension);
     }
@@ -352,8 +350,8 @@ Handle<JSFunction> Compiler::CompileEval(Handle<String> source,
   // the input is legal json.
 
   int source_length = source->length();
-  Counters::total_eval_size.Increment(source_length);
-  Counters::total_compile_size.Increment(source_length);
+  INCREMENT_COUNTER(total_eval_size, source_length);
+  INCREMENT_COUNTER(total_compile_size, source_length);
 
   // The VM is in the COMPILER state until exiting this function.
   VMState state(COMPILER);
@@ -403,7 +401,7 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
   int start_position = shared->start_position();
   int end_position = shared->end_position();
   bool is_expression = shared->is_expression();
-  Counters::total_compile_size.Increment(end_position - start_position);
+  INCREMENT_COUNTER(total_compile_size, end_position - start_position);
 
   // Generate the AST for the lazily compiled function. The AST may be
   // NULL in case of parser stack overflow.
@@ -424,7 +422,7 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
   // Measure how long it takes to do the lazy compilation; only take
   // the rest of the function into account to avoid overlap with the
   // lazy parsing statistics.
-  HistogramTimerScope timer(&Counters::compile_lazy);
+  HistogramTimerScope timer(&COUNTER(compile_lazy));
 
   // Compile the code.
   Handle<Code> code = MakeCode(lit, script, Handle<Context>::null(), false,

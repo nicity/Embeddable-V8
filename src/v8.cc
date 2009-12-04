@@ -38,20 +38,25 @@
 namespace v8 {
 namespace internal {
 
-bool V8::is_running_ = false;
-bool V8::has_been_setup_ = false;
-bool V8::has_been_disposed_ = false;
-bool V8::has_fatal_error_ = false;
+V8Data::V8Data()
+  :is_running_(false),
+  has_been_setup_(false),
+  has_been_disposed_(false),
+  has_fatal_error_(false),
+  active_(false),
+  exception_behavior_(NULL) {
+}
 
 bool V8::Initialize(Deserializer *des) {
   bool create_heap_objects = des == NULL;
-  if (has_been_disposed_ || has_fatal_error_) return false;
+  V8Data& v8_data = v8_context()->v8_data_;
+  if (v8_data.has_been_disposed_ || v8_data.has_fatal_error_) return false;
   if (IsRunning()) return true;
 
-  is_running_ = true;
-  has_been_setup_ = true;
-  has_fatal_error_ = false;
-  has_been_disposed_ = false;
+  v8_data.is_running_ = true;
+  v8_data.has_been_setup_ = true;
+  v8_data.has_fatal_error_ = false;
+  v8_data.has_been_disposed_ = false;
 #ifdef DEBUG
   // The initialization process does not handle memory exhaustion.
   DisallowAllocationFailure disallow_allocation_failure;
@@ -124,13 +129,15 @@ bool V8::Initialize(Deserializer *des) {
 
 
 void V8::SetFatalError() {
-  is_running_ = false;
-  has_fatal_error_ = true;
+  V8Data& v8_data = v8_context()->v8_data_;
+  v8_data.is_running_ = false;
+  v8_data.has_fatal_error_ = true;
 }
 
 
 void V8::TearDown() {
-  if (!has_been_setup_ || has_been_disposed_) return;
+  V8Data& v8_data = v8_context()->v8_data_;
+  if (!v8_data.has_been_setup_ || v8_data.has_been_disposed_) return;
 
   OProfileAgent::TearDown();
 
@@ -147,8 +154,8 @@ void V8::TearDown() {
   Heap::TearDown();
   Logger::TearDown();
 
-  is_running_ = false;
-  has_been_disposed_ = true;
+  v8_data.is_running_ = false;
+  v8_data.has_been_disposed_ = true;
 }
 
 

@@ -314,7 +314,7 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
   __ pop(ecx);
   __ lea(esp, Operand(esp, ebx, times_2, 1 * kPointerSize));  // 1 ~ receiver
   __ push(ecx);
-  __ IncrementCounter(&Counters::constructed_objects, 1);
+  __ IncrementCounter(&COUNTER(constructed_objects), 1);
   __ ret(0);
 }
 
@@ -907,7 +907,7 @@ static void ArrayNativeCode(MacroAssembler* masm,
                        edi,
                        kPreallocatedArrayElements,
                        &prepare_generic_code_call);
-  __ IncrementCounter(&Counters::array_function_native, 1);
+  __ IncrementCounter(&COUNTER(array_function_native), 1);
   __ pop(ebx);
   if (construct_call) {
     __ pop(edi);
@@ -947,7 +947,7 @@ static void ArrayNativeCode(MacroAssembler* masm,
                   edi,
                   true,
                   &prepare_generic_code_call);
-  __ IncrementCounter(&Counters::array_function_native, 1);
+  __ IncrementCounter(&COUNTER(array_function_native), 1);
   __ pop(ebx);
   if (construct_call) {
     __ pop(edi);
@@ -973,7 +973,7 @@ static void ArrayNativeCode(MacroAssembler* masm,
                   edi,
                   false,
                   &prepare_generic_code_call);
-  __ IncrementCounter(&Counters::array_function_native, 1);
+  __ IncrementCounter(&COUNTER(array_function_native), 1);
   __ mov(eax, ebx);
   __ pop(ebx);
   if (construct_call) {
@@ -1143,7 +1143,7 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   // -----------------------------------
 
   Label invoke, dont_adapt_arguments;
-  __ IncrementCounter(&Counters::arguments_adaptors, 1);
+  __ IncrementCounter(&COUNTER(arguments_adaptors), 1);
 
   Label enough, too_few;
   __ cmp(eax, Operand(ebx));

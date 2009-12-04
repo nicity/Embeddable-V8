@@ -47,18 +47,16 @@ namespace internal {
 // Implementation of CpuFeatures
 
 // Safe default is no features.
-uint64_t CpuFeatures::supported_ = 0;
-uint64_t CpuFeatures::enabled_ = 0;
-uint64_t CpuFeatures::found_by_runtime_probing_ = 0;
 
 
 // The Probe method needs executable memory, so it uses Heap::CreateCode.
 // Allocation failure is silent and leads to safe default.
 void CpuFeatures::Probe() {
+  AssemblerData* data = v8_context()->assembler_data_;
   ASSERT(Heap::HasBeenSetup());
-  ASSERT(supported_ == 0);
+  ASSERT(data->supported_ == 0);
   if (Serializer::enabled()) {
-    supported_ |= OS::CpuFeaturesImpliedByPlatform();
+    data->supported_ |= OS::CpuFeaturesImpliedByPlatform();
     return;  // No features if we might serialize.
   }
 
@@ -94,11 +92,11 @@ void CpuFeatures::Probe() {
   // safe here.
   __ bind(&cpuid);
   __ mov(eax, 1);
-  supported_ = (1 << CPUID);
+  data->supported_ = (1 << CPUID);
   { Scope fscope(CPUID);
     __ cpuid();
   }
-  supported_ = 0;
+  data->supported_ = 0;
 
   // Move the result from ecx:edx to edx:eax and make sure to mark the
   // CPUID feature as supported.
@@ -127,11 +125,11 @@ void CpuFeatures::Probe() {
                       Code::cast(code), "CpuFeatures::Probe"));
   typedef uint64_t (*F0)();
   F0 probe = FUNCTION_CAST<F0>(Code::cast(code)->entry());
-  supported_ = probe();
-  found_by_runtime_probing_ = supported_;
+  data->supported_ = probe();
+  data->found_by_runtime_probing_ = data->supported_;
   uint64_t os_guarantees = OS::CpuFeaturesImpliedByPlatform();
-  supported_ |= os_guarantees;
-  found_by_runtime_probing_ &= ~os_guarantees;
+  data->supported_ |= os_guarantees;
+  data->found_by_runtime_probing_ &= ~os_guarantees;
 }
 
 
@@ -278,18 +276,16 @@ bool Operand::is_reg(Register reg) const {
 static void InitCoverageLog();
 #endif
 
-// spare_buffer_
-byte* Assembler::spare_buffer_ = NULL;
 
 Assembler::Assembler(void* buffer, int buffer_size) {
   if (buffer == NULL) {
     // do our own buffer management
     if (buffer_size <= kMinimalBufferSize) {
       buffer_size = kMinimalBufferSize;
-
-      if (spare_buffer_ != NULL) {
-        buffer = spare_buffer_;
-        spare_buffer_ = NULL;
+      AssemblerData* const data = v8_context()->assembler_data_;
+      if (data->spare_buffer_ != NULL) {
+        buffer = data->spare_buffer_;
+        data->spare_buffer_ = NULL;
       }
     }
     if (buffer == NULL) {
@@ -334,8 +330,9 @@ Assembler::Assembler(void* buffer, int buffer_size) {
 
 Assembler::~Assembler() {
   if (own_buffer_) {
-    if (spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
-      spare_buffer_ = buffer_;
+    AssemblerData* const data = v8_context()->assembler_data_;
+    if (data->spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
+      data->spare_buffer_ = buffer_;
     } else {
       DeleteArray(buffer_);
     }
@@ -355,7 +352,7 @@ void Assembler::GetCode(CodeDesc* desc) {
   desc->reloc_size = (buffer_ + buffer_size_) - reloc_info_writer.pos();
   desc->origin = this;
 
-  Counters::reloc_info_size.Increment(desc->reloc_size);
+  INCREMENT_COUNTER(reloc_info_size, desc->reloc_size);
 }
 
 
@@ -2152,9 +2149,10 @@ void Assembler::GrowBuffer() {
   memmove(rc_delta + reloc_info_writer.pos(),
           reloc_info_writer.pos(), desc.reloc_size);
 
+  AssemblerData* const data = v8_context()->assembler_data_;
   // switch buffers
-  if (spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
-    spare_buffer_ = buffer_;
+  if (data->spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
+    data->spare_buffer_ = buffer_;
   } else {
     DeleteArray(buffer_);
   }
@@ -2264,6 +2262,13 @@ void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   reloc_info_writer.Write(&rinfo);
 }
 
+void Assembler::PostConstruct() {
+  v8_context()->assembler_data_ = new AssemblerData();
+}
+
+void Assembler::PreDestroy() {
+  delete v8_context()->assembler_data_;
+}
 
 #ifdef GENERATED_CODE_COVERAGE
 static FILE* coverage_log = NULL;

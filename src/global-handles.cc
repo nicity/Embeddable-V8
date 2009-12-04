@@ -32,8 +32,7 @@
 
 namespace v8 {
 namespace internal {
-
-class GlobalHandles::Node : public Malloced {
+class GlobalHandlesData::Node : public Malloced {
  public:
 
   void Initialize(Object* object) {
@@ -66,9 +65,10 @@ class GlobalHandles::Node : public Malloced {
 
   void Destroy() {
     if (state_ == WEAK || IsNearDeath()) {
-      GlobalHandles::number_of_weak_handles_--;
+      v8_context()->global_handles_data_.number_of_weak_handles_--;
       if (object_->IsJSGlobalObject()) {
-        GlobalHandles::number_of_global_object_weak_handles_--;
+        v8_context()->global_handles_data_.
+          number_of_global_object_weak_handles_--;
       }
     }
     state_ = DESTROYED;
@@ -103,9 +103,10 @@ class GlobalHandles::Node : public Malloced {
     LOG(HandleEvent("GlobalHandle::MakeWeak", handle().location()));
     ASSERT(state_ != DESTROYED);
     if (state_ != WEAK && !IsNearDeath()) {
-      GlobalHandles::number_of_weak_handles_++;
+      v8_context()->global_handles_data_.number_of_weak_handles_++;
       if (object_->IsJSGlobalObject()) {
-        GlobalHandles::number_of_global_object_weak_handles_++;
+        v8_context()->global_handles_data_.
+          number_of_global_object_weak_handles_++;
       }
     }
     state_ = WEAK;
@@ -117,9 +118,10 @@ class GlobalHandles::Node : public Malloced {
     LOG(HandleEvent("GlobalHandle::ClearWeakness", handle().location()));
     ASSERT(state_ != DESTROYED);
     if (state_ == WEAK || IsNearDeath()) {
-      GlobalHandles::number_of_weak_handles_--;
+      v8_context()->global_handles_data_.number_of_weak_handles_--;
       if (object_->IsJSGlobalObject()) {
-        GlobalHandles::number_of_global_object_weak_handles_--;
+        v8_context()->global_handles_data_.
+          number_of_global_object_weak_handles_--;
       }
     }
     state_ = NORMAL;
@@ -164,9 +166,9 @@ class GlobalHandles::Node : public Malloced {
       // Forbid reuse of destroyed nodes as they might be already deallocated.
       // It's fine though to reuse nodes that were destroyed in weak callback
       // as those cannot be deallocated until we are back from the callback.
-      set_first_free(NULL);
-      if (first_deallocated()) {
-        first_deallocated()->set_next(head());
+      GlobalHandles::set_first_free(NULL);
+      if (GlobalHandles::first_deallocated()) {
+        GlobalHandles::first_deallocated()->set_next(GlobalHandles::head());
       }
       // Leaving V8.
       VMState state(EXTERNAL);
@@ -258,12 +260,13 @@ class GlobalHandles::Pool BASE_EMBEDDED {
     Node* limit_;
 };
 
-
-static GlobalHandles::Pool pool_;
-
+class GlobalHandlesPrivateData {
+ public:
+  GlobalHandles::Pool pool_;
+};
 
 Handle<Object> GlobalHandles::Create(Object* value) {
-  Counters::global_handles.Increment();
+  INC_COUNTER(global_handles);
   Node* result;
   if (first_free()) {
     // Take the first node in the free list.
@@ -277,7 +280,7 @@ Handle<Object> GlobalHandles::Create(Object* value) {
     set_head(result);
   } else {
     // Allocate a new node.
-    result = pool_.Allocate();
+    result = v8_context()->global_handles_data_.private_data_.pool_.Allocate();
     result->set_next(head());
     set_head(result);
   }
@@ -287,7 +290,7 @@ Handle<Object> GlobalHandles::Create(Object* value) {
 
 
 void GlobalHandles::Destroy(Object** location) {
-  Counters::global_handles.Decrement();
+  DEC_COUNTER(global_handles);
   if (location == NULL) return;
   Node* node = Node::FromLocation(location);
   node->Destroy();
@@ -322,7 +325,9 @@ bool GlobalHandles::IsWeak(Object** location) {
 void GlobalHandles::IterateWeakRoots(ObjectVisitor* v) {
   // Traversal of GC roots in the global handle list that are marked as
   // WEAK or PENDING.
-  for (Node* current = head_; current != NULL; current = current->next()) {
+  for (Node* current = v8_context()->global_handles_data_.head_;
+       current != NULL;
+       current = current->next()) {
     if (current->state_ == Node::WEAK
       || current->state_ == Node::PENDING
       || current->state_ == Node::NEAR_DEATH) {
@@ -334,7 +339,9 @@ void GlobalHandles::IterateWeakRoots(ObjectVisitor* v) {
 
 void GlobalHandles::IterateWeakRoots(WeakReferenceGuest f,
                                      WeakReferenceCallback callback) {
-  for (Node* current = head_; current != NULL; current = current->next()) {
+  for (Node* current = v8_context()->global_handles_data_.head_;
+       current != NULL;
+       current = current->next()) {
     if (current->IsWeak() && current->callback() == callback) {
       f(current->object_, current->parameter());
     }
@@ -343,7 +350,9 @@ void GlobalHandles::IterateWeakRoots(WeakReferenceGuest f,
 
 
 void GlobalHandles::IdentifyWeakHandles(WeakSlotCallback f) {
-  for (Node* current = head_; current != NULL; current = current->next()) {
+  for (Node* current = v8_context()->global_handles_data_.head_;
+       current != NULL;
+       current = current->next()) {
     if (current->state_ == Node::WEAK) {
       if (f(&current->object_)) {
         current->state_ = Node::PENDING;
@@ -363,7 +372,7 @@ void GlobalHandles::PostGarbageCollectionProcessing() {
   // At the same time deallocate all DESTROYED nodes.
   ASSERT(Heap::gc_state() == Heap::NOT_IN_GC);
   const int initial_post_gc_processing_count = ++post_gc_processing_count;
-  Node** p = &head_;
+  Node** p = &v8_context()->global_handles_data_.head_;
   while (*p != NULL) {
     if ((*p)->PostGarbageCollectionProcessing()) {
       if (initial_post_gc_processing_count != post_gc_processing_count) {
@@ -396,7 +405,9 @@ void GlobalHandles::PostGarbageCollectionProcessing() {
 
 void GlobalHandles::IterateStrongRoots(ObjectVisitor* v) {
   // Traversal of global handles marked as NORMAL.
-  for (Node* current = head_; current != NULL; current = current->next()) {
+  for (Node* current = v8_context()->global_handles_data_.head_;
+       current != NULL;
+       current = current->next()) {
     if (current->state_ == Node::NORMAL) {
       v->VisitPointer(&current->object_);
     }
@@ -405,7 +416,9 @@ void GlobalHandles::IterateStrongRoots(ObjectVisitor* v) {
 
 
 void GlobalHandles::IterateAllRoots(ObjectVisitor* v) {
-  for (Node* current = head_; current != NULL; current = current->next()) {
+  for (Node* current = v8_context()->global_handles_data_.head_;
+       current != NULL;
+       current = current->next()) {
     if (current->state_ != Node::DESTROYED) {
       v->VisitPointer(&current->object_);
     }
@@ -418,16 +431,21 @@ void GlobalHandles::TearDown() {
   set_head(NULL);
   set_first_free(NULL);
   set_first_deallocated(NULL);
-  pool_.Release();
+  v8_context()->global_handles_data_.private_data_.pool_.Release();
 }
 
+GlobalHandlesData::GlobalHandlesData()
+  :number_of_weak_handles_(0),
+  number_of_global_object_weak_handles_(0),
+  head_(NULL),
+  first_free_(NULL),
+  private_data_(*new GlobalHandlesPrivateData()),
+  first_deallocated_(NULL) {
+}
 
-int GlobalHandles::number_of_weak_handles_ = 0;
-int GlobalHandles::number_of_global_object_weak_handles_ = 0;
-
-GlobalHandles::Node* GlobalHandles::head_ = NULL;
-GlobalHandles::Node* GlobalHandles::first_free_ = NULL;
-GlobalHandles::Node* GlobalHandles::first_deallocated_ = NULL;
+GlobalHandlesData::~GlobalHandlesData() {
+  delete &private_data_;
+}
 
 void GlobalHandles::RecordStats(HeapStats* stats) {
   *stats->global_handle_count = 0;
@@ -435,7 +453,8 @@ void GlobalHandles::RecordStats(HeapStats* stats) {
   *stats->pending_global_handle_count = 0;
   *stats->near_death_global_handle_count = 0;
   *stats->destroyed_global_handle_count = 0;
-  for (Node* current = head_; current != NULL; current = current->next()) {
+  for (Node* current = v8_context()->global_handles_data_.head_;
+    current != NULL; current = current->next()) {
     *stats->global_handle_count += 1;
     if (current->state_ == Node::WEAK) {
       *stats->weak_global_handle_count += 1;
@@ -458,7 +477,9 @@ void GlobalHandles::PrintStats() {
   int near_death = 0;
   int destroyed = 0;
 
-  for (Node* current = head_; current != NULL; current = current->next()) {
+  for (Node* current = v8_context()->global_handles_data_.head_;
+       current != NULL;
+       current = current->next()) {
     total++;
     if (current->state_ == Node::WEAK) weak++;
     if (current->state_ == Node::PENDING) pending++;
@@ -477,7 +498,9 @@ void GlobalHandles::PrintStats() {
 
 void GlobalHandles::Print() {
   PrintF("Global handles:\n");
-  for (Node* current = head_; current != NULL; current = current->next()) {
+  for (Node* current = v8_context()->global_handles_data_.head_;
+       current != NULL;
+       current = current->next()) {
     PrintF("  handle %p to %p (weak=%d)\n", current->handle().location(),
            *current->handle(), current->state_ == Node::WEAK);
   }

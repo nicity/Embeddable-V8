@@ -41,6 +41,21 @@ namespace internal {
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
 
+class LoggerPrivateData {
+ public:
+  // Tells whether we are currently recording tick samples.
+  bool profiler_paused_;
+
+  Address prev_to_;
+  Address prev_sp_;
+
+  LoggerPrivateData()
+    :profiler_paused_(false),
+    prev_to_(NULL),
+    prev_sp_(NULL) {
+  }
+};
+
 //
 // Sliding state window.  Updates counters to keep track of the last
 // window of kBufferSize states.  This is useful to track where we
@@ -60,12 +75,12 @@ class SlidingStateWindow {
 
 
   void IncrementStateCounter(StateTag state) {
-    Counters::state_counters[state].Increment();
+    INC_COUNTER(state_counters[state]);
   }
 
 
   void DecrementStateCounter(StateTag state) {
-    Counters::state_counters[state].Decrement();
+    DEC_COUNTER(state_counters[state]);
   }
 };
 
@@ -84,7 +99,7 @@ class Profiler: public Thread {
 
   // Inserts collected profiling data into buffer.
   void Insert(TickSample* sample) {
-    if (paused_)
+    if (v8_context()->logger_data_.private_data_.profiler_paused_)
       return;
 
     if (Succ(head_) == tail_) {
@@ -109,9 +124,15 @@ class Profiler: public Thread {
   void Run();
 
   // Pause and Resume TickSample data collection.
-  static bool paused() { return paused_; }
-  static void pause() { paused_ = true; }
-  static void resume() { paused_ = false; }
+  static bool paused() {
+    return v8_context()->logger_data_.private_data_.profiler_paused_;
+  }
+  static void pause() {
+    v8_context()->logger_data_.private_data_.profiler_paused_ = true;
+  }
+  static void resume() {
+    v8_context()->logger_data_.private_data_.profiler_paused_ = false;
+  }
 
  private:
   // Returns the next index in the cyclic buffer.
@@ -131,12 +152,8 @@ class Profiler: public Thread {
 
   // Tells whether worker thread should continue running.
   bool running_;
-
-  // Tells whether we are currently recording tick samples.
-  static bool paused_;
 };
 
-bool Profiler::paused_ = false;
 
 
 //
@@ -156,8 +173,9 @@ void StackTracer::Trace(TickSample* sample) {
   }
 
   int i = 0;
-  const Address callback = Logger::current_state_ != NULL ?
-      Logger::current_state_->external_callback() : NULL;
+  LoggerData& logger_data = v8_context()->logger_data_;
+  const Address callback = logger_data.current_state_ != NULL ?
+      logger_data.current_state_->external_callback() : NULL;
   if (callback != NULL) {
     sample->stack[i++] = callback;
   }
@@ -228,12 +246,12 @@ SlidingStateWindow::SlidingStateWindow(): current_index_(0), is_full_(false) {
   for (int i = 0; i < kBufferSize; i++) {
     buffer_[i] = static_cast<byte>(OTHER);
   }
-  Logger::ticker_->SetWindow(this);
+  v8_context()->logger_data_.ticker_->SetWindow(this);
 }
 
 
 SlidingStateWindow::~SlidingStateWindow() {
-  Logger::ticker_->ClearWindow();
+  v8_context()->logger_data_.ticker_->ClearWindow();
 }
 
 
@@ -278,7 +296,7 @@ void Profiler::Engage() {
   Start();
 
   // Register to get ticks.
-  Logger::ticker_->SetProfiler(this);
+  v8_context()->logger_data_.ticker_->SetProfiler(this);
 
   Logger::ProfilerBeginEvent();
   Logger::LogAliases();
@@ -289,7 +307,7 @@ void Profiler::Disengage() {
   if (!engaged_) return;
 
   // Stop receiving ticks.
-  Logger::ticker_->ClearProfiler();
+  v8_context()->logger_data_.ticker_->ClearProfiler();
 
   // Terminate the worker thread by setting running_ to false,
   // inserting a fake element in the queue and then wait for
@@ -307,10 +325,11 @@ void Profiler::Disengage() {
 
 void Profiler::Run() {
   TickSample sample;
-  bool overflow = Logger::profiler_->Remove(&sample);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  bool overflow = logger_data.profiler_->Remove(&sample);
   while (running_) {
     LOG(TickEvent(&sample, overflow));
-    overflow = Logger::profiler_->Remove(&sample);
+    overflow = logger_data.profiler_->Remove(&sample);
   }
 }
 
@@ -318,14 +337,21 @@ void Profiler::Run() {
 //
 // Logger class implementation.
 //
-Ticker* Logger::ticker_ = NULL;
-Profiler* Logger::profiler_ = NULL;
-VMState* Logger::current_state_ = NULL;
-VMState Logger::bottom_state_(EXTERNAL);
-SlidingStateWindow* Logger::sliding_state_window_ = NULL;
-const char** Logger::log_events_ = NULL;
-CompressionHelper* Logger::compression_helper_ = NULL;
-bool Logger::is_logging_ = false;
+LoggerData::LoggerData()
+  :private_data_(*new LoggerPrivateData()),
+  ticker_(NULL),
+  profiler_(NULL),
+  current_state_(NULL),
+  sliding_state_window_(NULL),
+  log_events_(NULL),
+  compression_helper_(NULL),
+  is_logging_(false),
+  bottom_state_(EXTERNAL) {
+}
+
+LoggerData::~LoggerData() {
+  delete &private_data_;
+}
 
 #define DECLARE_LONG_EVENT(ignore1, long_name, ignore2) long_name,
 const char* kLongLogEventsNames[Logger::NUMBER_OF_LOG_EVENTS] = {
@@ -665,8 +691,8 @@ class CompressionHelper {
       return msg->RetrieveCompressedPrevious(&compressor_);
     }
     OS::SNPrintF(prefix_, "%s,%d,",
-                 Logger::log_events_[Logger::REPEAT_META_EVENT],
-                 repeat_count_ + 1);
+      v8_context()->logger_data_.log_events_[Logger::REPEAT_META_EVENT],
+      repeat_count_ + 1);
     repeat_count_ = 0;
     return msg->RetrieveCompressedPrevious(&compressor_, prefix_.start());
   }
@@ -685,13 +711,14 @@ void Logger::CallbackEventInternal(const char* prefix, const char* name,
                                    Address entry_point) {
   if (!Log::IsEnabled() || !FLAG_log_code) return;
   LogMessageBuilder msg;
-  msg.Append("%s,%s,",
-             log_events_[CODE_CREATION_EVENT], log_events_[CALLBACK_TAG]);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  msg.Append("%s,%s,", logger_data.log_events_[CODE_CREATION_EVENT],
+    logger_data.log_events_[CALLBACK_TAG]);
   msg.AppendAddress(entry_point);
   msg.Append(",1,\"%s%s\"", prefix, name);
   if (FLAG_compress_log) {
-    ASSERT(compression_helper_ != NULL);
-    if (!compression_helper_->HandleMessage(&msg)) return;
+    ASSERT(logger_data.compression_helper_ != NULL);
+    if (!logger_data.compression_helper_->HandleMessage(&msg)) return;
   }
   msg.Append('\n');
   msg.WriteToLogFile();
@@ -735,7 +762,9 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag,
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (!Log::IsEnabled() || !FLAG_log_code) return;
   LogMessageBuilder msg;
-  msg.Append("%s,%s,", log_events_[CODE_CREATION_EVENT], log_events_[tag]);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  msg.Append("%s,%s,", logger_data.log_events_[CODE_CREATION_EVENT],
+    logger_data.log_events_[tag]);
   msg.AppendAddress(code->address());
   msg.Append(",%d,\"", code->ExecutableSize());
   for (const char* p = comment; *p != '\0'; p++) {
@@ -746,8 +775,8 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag,
   }
   msg.Append('"');
   if (FLAG_compress_log) {
-    ASSERT(compression_helper_ != NULL);
-    if (!compression_helper_->HandleMessage(&msg)) return;
+    ASSERT(logger_data.compression_helper_ != NULL);
+    if (!logger_data.compression_helper_->HandleMessage(&msg)) return;
   }
   msg.Append('\n');
   msg.WriteToLogFile();
@@ -761,12 +790,14 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag, Code* code, String* name) {
   LogMessageBuilder msg;
   SmartPointer<char> str =
       name->ToCString(DISALLOW_NULLS, ROBUST_STRING_TRAVERSAL);
-  msg.Append("%s,%s,", log_events_[CODE_CREATION_EVENT], log_events_[tag]);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  msg.Append("%s,%s,", logger_data.log_events_[CODE_CREATION_EVENT],
+    logger_data.log_events_[tag]);
   msg.AppendAddress(code->address());
   msg.Append(",%d,\"%s\"", code->ExecutableSize(), *str);
   if (FLAG_compress_log) {
-    ASSERT(compression_helper_ != NULL);
-    if (!compression_helper_->HandleMessage(&msg)) return;
+    ASSERT(logger_data.compression_helper_ != NULL);
+    if (!logger_data.compression_helper_->HandleMessage(&msg)) return;
   }
   msg.Append('\n');
   msg.WriteToLogFile();
@@ -784,13 +815,15 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag,
       name->ToCString(DISALLOW_NULLS, ROBUST_STRING_TRAVERSAL);
   SmartPointer<char> sourcestr =
       source->ToCString(DISALLOW_NULLS, ROBUST_STRING_TRAVERSAL);
-  msg.Append("%s,%s,", log_events_[CODE_CREATION_EVENT], log_events_[tag]);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  msg.Append("%s,%s,", logger_data.log_events_[CODE_CREATION_EVENT],
+    logger_data.log_events_[tag]);
   msg.AppendAddress(code->address());
   msg.Append(",%d,\"%s %s:%d\"",
              code->ExecutableSize(), *str, *sourcestr, line);
   if (FLAG_compress_log) {
-    ASSERT(compression_helper_ != NULL);
-    if (!compression_helper_->HandleMessage(&msg)) return;
+    ASSERT(logger_data.compression_helper_ != NULL);
+    if (!logger_data.compression_helper_->HandleMessage(&msg)) return;
   }
   msg.Append('\n');
   msg.WriteToLogFile();
@@ -802,12 +835,14 @@ void Logger::CodeCreateEvent(LogEventsAndTags tag, Code* code, int args_count) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (!Log::IsEnabled() || !FLAG_log_code) return;
   LogMessageBuilder msg;
-  msg.Append("%s,%s,", log_events_[CODE_CREATION_EVENT], log_events_[tag]);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  msg.Append("%s,%s,", logger_data.log_events_[CODE_CREATION_EVENT],
+    logger_data.log_events_[tag]);
   msg.AppendAddress(code->address());
   msg.Append(",%d,\"args_count: %d\"", code->ExecutableSize(), args_count);
   if (FLAG_compress_log) {
-    ASSERT(compression_helper_ != NULL);
-    if (!compression_helper_->HandleMessage(&msg)) return;
+    ASSERT(logger_data.compression_helper_ != NULL);
+    if (!logger_data.compression_helper_->HandleMessage(&msg)) return;
   }
   msg.Append('\n');
   msg.WriteToLogFile();
@@ -819,15 +854,17 @@ void Logger::RegExpCodeCreateEvent(Code* code, String* source) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (!Log::IsEnabled() || !FLAG_log_code) return;
   LogMessageBuilder msg;
+  LoggerData& logger_data = v8_context()->logger_data_;
   msg.Append("%s,%s,",
-             log_events_[CODE_CREATION_EVENT], log_events_[REG_EXP_TAG]);
+    logger_data.log_events_[CODE_CREATION_EVENT],
+    logger_data.log_events_[REG_EXP_TAG]);
   msg.AppendAddress(code->address());
   msg.Append(",%d,\"", code->ExecutableSize());
   msg.AppendDetailed(source, false);
   msg.Append('\"');
   if (FLAG_compress_log) {
-    ASSERT(compression_helper_ != NULL);
-    if (!compression_helper_->HandleMessage(&msg)) return;
+    ASSERT(logger_data.compression_helper_ != NULL);
+    if (!logger_data.compression_helper_->HandleMessage(&msg)) return;
   }
   msg.Append('\n');
   msg.WriteToLogFile();
@@ -837,17 +874,17 @@ void Logger::RegExpCodeCreateEvent(Code* code, String* source) {
 
 void Logger::CodeMoveEvent(Address from, Address to) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
-  static Address prev_to_ = NULL;
   if (!Log::IsEnabled() || !FLAG_log_code) return;
   LogMessageBuilder msg;
-  msg.Append("%s,", log_events_[CODE_MOVE_EVENT]);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  msg.Append("%s,", logger_data.log_events_[CODE_MOVE_EVENT]);
   msg.AppendAddress(from);
   msg.Append(',');
-  msg.AppendAddress(to, prev_to_);
-  prev_to_ = to;
+  msg.AppendAddress(to, logger_data.private_data_.prev_to_);
+  logger_data.private_data_.prev_to_ = to;
   if (FLAG_compress_log) {
-    ASSERT(compression_helper_ != NULL);
-    if (!compression_helper_->HandleMessage(&msg)) return;
+    ASSERT(logger_data.compression_helper_ != NULL);
+    if (!logger_data.compression_helper_->HandleMessage(&msg)) return;
   }
   msg.Append('\n');
   msg.WriteToLogFile();
@@ -859,11 +896,12 @@ void Logger::CodeDeleteEvent(Address from) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (!Log::IsEnabled() || !FLAG_log_code) return;
   LogMessageBuilder msg;
-  msg.Append("%s,", log_events_[CODE_DELETE_EVENT]);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  msg.Append("%s,", logger_data.log_events_[CODE_DELETE_EVENT]);
   msg.AppendAddress(from);
   if (FLAG_compress_log) {
-    ASSERT(compression_helper_ != NULL);
-    if (!compression_helper_->HandleMessage(&msg)) return;
+    ASSERT(logger_data.compression_helper_ != NULL);
+    if (!logger_data.compression_helper_->HandleMessage(&msg)) return;
   }
   msg.Append('\n');
   msg.WriteToLogFile();
@@ -1051,14 +1089,16 @@ void Logger::DebugEvent(const char* event_type, Vector<uint16_t> parameter) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
 void Logger::TickEvent(TickSample* sample, bool overflow) {
   if (!Log::IsEnabled() || !FLAG_prof) return;
-  static Address prev_sp = NULL;
+
   LogMessageBuilder msg;
-  msg.Append("%s,", log_events_[TICK_EVENT]);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  msg.Append("%s,", logger_data.log_events_[TICK_EVENT]);
   Address prev_addr = reinterpret_cast<Address>(sample->pc);
   msg.AppendAddress(prev_addr);
   msg.Append(',');
-  msg.AppendAddress(reinterpret_cast<Address>(sample->sp), prev_sp);
-  prev_sp = reinterpret_cast<Address>(sample->sp);
+  msg.AppendAddress(reinterpret_cast<Address>(sample->sp),
+    logger_data.private_data_.prev_sp_);
+  logger_data.private_data_.prev_sp_ = reinterpret_cast<Address>(sample->sp);
   msg.Append(",%d", static_cast<int>(sample->state));
   if (overflow) {
     msg.Append(",overflow");
@@ -1069,8 +1109,8 @@ void Logger::TickEvent(TickSample* sample, bool overflow) {
     prev_addr = sample->stack[i];
   }
   if (FLAG_compress_log) {
-    ASSERT(compression_helper_ != NULL);
-    if (!compression_helper_->HandleMessage(&msg)) return;
+    ASSERT(logger_data.compression_helper_ != NULL);
+    if (!logger_data.compression_helper_->HandleMessage(&msg)) return;
   }
   msg.Append('\n');
   msg.WriteToLogFile();
@@ -1079,7 +1119,7 @@ void Logger::TickEvent(TickSample* sample, bool overflow) {
 
 int Logger::GetActiveProfilerModules() {
   int result = PROFILER_MODULE_NONE;
-  if (!profiler_->paused()) {
+  if (!v8_context()->logger_data_.profiler_->paused()) {
     result |= PROFILER_MODULE_CPU;
   }
   if (FLAG_log_gc) {
@@ -1095,10 +1135,11 @@ void Logger::PauseProfiler(int flags) {
   const int modules_to_disable = active_modules & flags;
   if (modules_to_disable == PROFILER_MODULE_NONE) return;
 
+  LoggerData& logger_data = v8_context()->logger_data_;
   if (modules_to_disable & PROFILER_MODULE_CPU) {
-    profiler_->pause();
+    logger_data.profiler_->pause();
     if (FLAG_prof_lazy) {
-      if (!FLAG_sliding_state_window) ticker_->Stop();
+      if (!FLAG_sliding_state_window) logger_data.ticker_->Stop();
       FLAG_log_code = false;
       // Must be the same message as Log::kDynamicBufferSeal.
       LOG(UncheckedStringEvent("profiler", "pause"));
@@ -1110,7 +1151,7 @@ void Logger::PauseProfiler(int flags) {
   }
   // Turn off logging if no active modules remain.
   if ((active_modules & ~flags) == PROFILER_MODULE_NONE) {
-    is_logging_ = false;
+    logger_data.is_logging_ = false;
   }
 }
 
@@ -1118,19 +1159,20 @@ void Logger::PauseProfiler(int flags) {
 void Logger::ResumeProfiler(int flags) {
   if (!Log::IsEnabled()) return;
   const int modules_to_enable = ~GetActiveProfilerModules() & flags;
+  LoggerData& logger_data = v8_context()->logger_data_;
   if (modules_to_enable != PROFILER_MODULE_NONE) {
-    is_logging_ = true;
+    logger_data.is_logging_ = true;
   }
   if (modules_to_enable & PROFILER_MODULE_CPU) {
     if (FLAG_prof_lazy) {
-      profiler_->Engage();
+      logger_data.profiler_->Engage();
       LOG(UncheckedStringEvent("profiler", "resume"));
       FLAG_log_code = true;
       LogCompiledFunctions();
       LogAccessorCallbacks();
-      if (!FLAG_sliding_state_window) ticker_->Start();
+      if (!FLAG_sliding_state_window) logger_data.ticker_->Start();
     }
-    profiler_->resume();
+    logger_data.profiler_->resume();
   }
   if (modules_to_enable &
       (PROFILER_MODULE_HEAP_STATS | PROFILER_MODULE_JS_CONSTRUCTORS)) {
@@ -1148,7 +1190,7 @@ void Logger::StopLoggingAndProfiling() {
 
 
 bool Logger::IsProfilerSamplerActive() {
-  return ticker_->IsActive();
+  return v8_context()->logger_data_.ticker_->IsActive();
 }
 
 
@@ -1371,36 +1413,37 @@ bool Logger::Setup() {
       Log::OpenFile(FLAG_logfile);
     }
   }
+  LoggerData& logger_data = v8_context()->logger_data_;
+  logger_data.current_state_ = &logger_data.bottom_state_;
 
-  current_state_ = &bottom_state_;
+  logger_data.ticker_ = new Ticker(kSamplingIntervalMs);
 
-  ticker_ = new Ticker(kSamplingIntervalMs);
-
-  if (FLAG_sliding_state_window && sliding_state_window_ == NULL) {
-    sliding_state_window_ = new SlidingStateWindow();
+  if (FLAG_sliding_state_window && logger_data.sliding_state_window_ == NULL) {
+    logger_data.sliding_state_window_ = new SlidingStateWindow();
   }
 
-  log_events_ = FLAG_compress_log ?
+  logger_data.log_events_ = FLAG_compress_log ?
       kCompressedLogEventsNames : kLongLogEventsNames;
   if (FLAG_compress_log) {
-    compression_helper_ = new CompressionHelper(kCompressionWindowSize);
+    logger_data.compression_helper_ =
+      new CompressionHelper(kCompressionWindowSize);
   }
 
-  is_logging_ = start_logging;
+  logger_data.is_logging_ = start_logging;
 
   if (FLAG_prof) {
-    profiler_ = new Profiler();
+    logger_data.profiler_ = new Profiler();
     if (!FLAG_prof_auto) {
-      profiler_->pause();
+      logger_data.profiler_->pause();
     } else {
-      is_logging_ = true;
+      logger_data.is_logging_ = true;
     }
     if (!FLAG_prof_lazy) {
-      profiler_->Engage();
+      logger_data.profiler_->Engage();
     }
   }
 
-  LogMessageBuilder::set_write_failure_handler(StopLoggingAndProfiling);
+  v8_context()->log_data_.set_write_failure_handler(StopLoggingAndProfiling);
 
   return true;
 
@@ -1412,23 +1455,24 @@ bool Logger::Setup() {
 
 void Logger::TearDown() {
 #ifdef ENABLE_LOGGING_AND_PROFILING
-  LogMessageBuilder::set_write_failure_handler(NULL);
+  LoggerData& logger_data = v8_context()->logger_data_;
+  v8_context()->log_data_.set_write_failure_handler(NULL);
 
   // Stop the profiler before closing the file.
-  if (profiler_ != NULL) {
-    profiler_->Disengage();
-    delete profiler_;
-    profiler_ = NULL;
+  if (logger_data.profiler_ != NULL) {
+    logger_data.profiler_->Disengage();
+    delete logger_data.profiler_;
+    logger_data.profiler_ = NULL;
   }
 
-  delete compression_helper_;
-  compression_helper_ = NULL;
+  delete logger_data.compression_helper_;
+  logger_data.compression_helper_ = NULL;
 
-  delete sliding_state_window_;
-  sliding_state_window_ = NULL;
+  delete logger_data.sliding_state_window_;
+  logger_data.sliding_state_window_ = NULL;
 
-  delete ticker_;
-  ticker_ = NULL;
+  delete logger_data.ticker_;
+  logger_data.ticker_ = NULL;
 
   Log::Close();
 #endif
@@ -1437,18 +1481,19 @@ void Logger::TearDown() {
 
 void Logger::EnableSlidingStateWindow() {
 #ifdef ENABLE_LOGGING_AND_PROFILING
+  LoggerData& logger_data = v8_context()->logger_data_;
   // If the ticker is NULL, Logger::Setup has not been called yet.  In
   // that case, we set the sliding_state_window flag so that the
   // sliding window computation will be started when Logger::Setup is
   // called.
-  if (ticker_ == NULL) {
+  if (logger_data.ticker_ == NULL) {
     FLAG_sliding_state_window = true;
     return;
   }
   // Otherwise, if the sliding state window computation has not been
   // started we do it now.
-  if (sliding_state_window_ == NULL) {
-    sliding_state_window_ = new SlidingStateWindow();
+  if (logger_data.sliding_state_window_ == NULL) {
+    logger_data.sliding_state_window_ = new SlidingStateWindow();
   }
 #endif
 }

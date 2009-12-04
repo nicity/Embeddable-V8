@@ -31,25 +31,40 @@
 
 namespace v8 {
 namespace internal {
-
-#define HT(name, caption) \
-  HistogramTimer Counters::name = { #caption, NULL, false, 0, 0 }; \
-
-  HISTOGRAM_TIMER_LIST(HT)
-#undef SR
-
-#define SC(name, caption) \
-  StatsCounter Counters::name = { "c:" #caption, NULL, false };
-
-  STATS_COUNTER_LIST_1(SC)
-  STATS_COUNTER_LIST_2(SC)
-#undef SC
-
-StatsCounter Counters::state_counters[] = {
+static StatsCounter state_counters[] = {
 #define COUNTER_NAME(name) \
   { "c:V8.State" #name, NULL, false },
   STATE_TAG_LIST(COUNTER_NAME)
 #undef COUNTER_NAME
 };
+
+enum {
+  #define COUNTER_ID(name) k##name,
+  STATE_TAG_LIST(COUNTER_ID)
+#undef COUNTER_ID
+  state_counters_count
+};
+
+Counters::Counters()
+  : state_counters(new StatsCounter[state_counters_count]) {
+  #define HT(name, caption) \
+    HistogramTimer _##name = { #caption, NULL, false, 0, 0 }; \
+    name = _##name;                                           \
+
+    HISTOGRAM_TIMER_LIST(HT)
+  #undef HT
+
+  #define SC(name, caption) \
+    StatsCounter _##name = { "c:" #caption, NULL, false }; \
+    name = _##name;
+
+    STATS_COUNTER_LIST_1(SC)
+    STATS_COUNTER_LIST_2(SC)
+  #undef SC
+
+  for (int i = 0; i < state_counters_count; ++i) {
+    state_counters[i] = v8::internal::state_counters[i];
+  }
+}
 
 } }  // namespace v8::internal

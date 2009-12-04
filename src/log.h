@@ -139,6 +139,52 @@ class VMState BASE_EMBEDDED {
   V(STORE_IC_TAG,                   "StoreIC",                "sic")      \
   V(STUB_TAG,                       "Stub",                   "s")
 
+class LoggerPrivateData;
+
+class LoggerData {
+  #ifdef ENABLE_LOGGING_AND_PROFILING
+  // The sampler used by the profiler and the sliding state window.
+    Ticker* ticker_;
+
+    // When the statistical profile is active, profiler_
+    // points to a Profiler, that handles collection
+    // of samples.
+    Profiler* profiler_;
+
+    // A stack of VM states.
+    VMState* current_state_;
+
+    // Singleton bottom or default vm state.
+    VMState bottom_state_;
+
+    // SlidingStateWindow instance keeping a sliding window of the most
+    // recent VM states.
+    SlidingStateWindow* sliding_state_window_;
+
+    // An array of log events names.
+    const char** log_events_;
+
+    // An instance of helper created if log compression is enabled.
+    CompressionHelper* compression_helper_;
+
+    bool is_logging_;
+
+    LoggerPrivateData& private_data_;
+  #endif
+
+  friend class V8Context;
+  friend class Logger;
+  friend class VMState;
+  friend class Profiler;
+  friend class SlidingStateWindow;
+  friend class StackTracer;
+  friend class CompressionHelper;
+
+  LoggerData();
+  ~LoggerData();
+  DISALLOW_COPY_AND_ASSIGN(LoggerData);
+};
+
 class Logger {
  public:
 #define DECLARE_ENUM(enum_item, ignore1, ignore2) enum_item,
@@ -255,11 +301,13 @@ class Logger {
 
 #ifdef ENABLE_LOGGING_AND_PROFILING
   static StateTag state() {
-    return current_state_ ? current_state_->state() : OTHER;
+    LoggerData& data = v8_context()->logger_data_;
+    return data.current_state_ ? data.current_state_->state() : OTHER;
   }
 
   static bool is_logging() {
-    return is_logging_;
+    V8Context* const v8context = v8_context();
+    return v8context != NULL ? v8context->logger_data_.is_logging_:false;
   }
 
   // Pause/Resume collection of profiling data.
@@ -316,43 +364,16 @@ class Logger {
   // Returns whether profiler's sampler is active.
   static bool IsProfilerSamplerActive();
 
-  // The sampler used by the profiler and the sliding state window.
-  static Ticker* ticker_;
-
-  // When the statistical profile is active, profiler_
-  // points to a Profiler, that handles collection
-  // of samples.
-  static Profiler* profiler_;
-
-  // A stack of VM states.
-  static VMState* current_state_;
-
-  // Singleton bottom or default vm state.
-  static VMState bottom_state_;
-
-  // SlidingStateWindow instance keeping a sliding window of the most
-  // recent VM states.
-  static SlidingStateWindow* sliding_state_window_;
-
-  // An array of log events names.
-  static const char** log_events_;
-
-  // An instance of helper created if log compression is enabled.
-  static CompressionHelper* compression_helper_;
-
   // Internal implementation classes with access to
   // private members.
   friend class CompressionHelper;
   friend class EventLog;
   friend class TimeLog;
   friend class Profiler;
-  friend class SlidingStateWindow;
   friend class StackTracer;
   friend class VMState;
 
   friend class LoggerTestHelper;
-
-  static bool is_logging_;
 #else
   static bool is_logging() { return false; }
 #endif

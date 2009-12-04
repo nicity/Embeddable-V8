@@ -350,7 +350,7 @@ void Assembler::GetCode(CodeDesc* desc) {
       static_cast<int>((buffer_ + buffer_size_) - reloc_info_writer.pos());
   desc->origin = this;
 
-  Counters::reloc_info_size.Increment(desc->reloc_size);
+  INCREMENT_COUNTER(reloc_info_size, desc->reloc_size);
 }
 
 

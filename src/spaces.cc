@@ -140,41 +140,40 @@ PageIterator::PageIterator(PagedSpace* space, Mode mode) : space_(space) {
 // -----------------------------------------------------------------------------
 // Page
 
-#ifdef DEBUG
-Page::RSetState Page::rset_state_ = Page::IN_USE;
-#endif
-
 // -----------------------------------------------------------------------------
 // CodeRange
 
-List<CodeRange::FreeBlock> CodeRange::free_list_(0);
-List<CodeRange::FreeBlock> CodeRange::allocation_list_(0);
-int CodeRange::current_allocation_block_index_ = 0;
-VirtualMemory* CodeRange::code_range_ = NULL;
-
+CodeRangeData::CodeRangeData()
+  :free_list_(0), allocation_list_(0), current_allocation_block_index_(0),
+  code_range_(NULL) {
+}
 
 bool CodeRange::Setup(const size_t requested) {
-  ASSERT(code_range_ == NULL);
+  CodeRangeData& data = v8_context()->code_range_data_;
+  ASSERT(data.code_range_ == NULL);
 
-  code_range_ = new VirtualMemory(requested);
-  CHECK(code_range_ != NULL);
-  if (!code_range_->IsReserved()) {
-    delete code_range_;
-    code_range_ = NULL;
+  data.code_range_ = new VirtualMemory(requested);
+  CHECK(data.code_range_ != NULL);
+  if (!data.code_range_->IsReserved()) {
+    delete data.code_range_;
+    data.code_range_ = NULL;
     return false;
   }
 
   // We are sure that we have mapped a block of requested addresses.
-  ASSERT(code_range_->size() == requested);
-  LOG(NewEvent("CodeRange", code_range_->address(), requested));
-  allocation_list_.Add(FreeBlock(code_range_->address(), code_range_->size()));
-  current_allocation_block_index_ = 0;
+  ASSERT(data.code_range_->size() == requested);
+  LOG(NewEvent("CodeRange", data.code_range_->address(), requested));
+  data.allocation_list_.Add(
+    CodeRangeData::FreeBlock(
+      data.code_range_->address(),
+      data.code_range_->size()));
+  data.current_allocation_block_index_ = 0;
   return true;
 }
 
 
-int CodeRange::CompareFreeBlockAddress(const FreeBlock* left,
-                                       const FreeBlock* right) {
+int CodeRange::CompareFreeBlockAddress(const CodeRangeData::FreeBlock* left,
+                                       const CodeRangeData::FreeBlock* right) {
   // The entire point of CodeRange is that the difference between two
   // addresses in the range can be represented as a signed 32-bit int,
   // so the cast is semantically correct.
@@ -183,37 +182,40 @@ int CodeRange::CompareFreeBlockAddress(const FreeBlock* left,
 
 
 void CodeRange::GetNextAllocationBlock(size_t requested) {
-  for (current_allocation_block_index_++;
-       current_allocation_block_index_ < allocation_list_.length();
-       current_allocation_block_index_++) {
-    if (requested <= allocation_list_[current_allocation_block_index_].size) {
+  CodeRangeData& data = v8_context()->code_range_data_;
+  for (data.current_allocation_block_index_++;
+       data.current_allocation_block_index_ < data.allocation_list_.length();
+       data.current_allocation_block_index_++) {
+    if (requested <=
+        data.allocation_list_[data.current_allocation_block_index_].size) {
       return;  // Found a large enough allocation block.
     }
   }
 
   // Sort and merge the free blocks on the free list and the allocation list.
-  free_list_.AddAll(allocation_list_);
-  allocation_list_.Clear();
-  free_list_.Sort(&CompareFreeBlockAddress);
-  for (int i = 0; i < free_list_.length();) {
-    FreeBlock merged = free_list_[i];
+  data.free_list_.AddAll(data.allocation_list_);
+  data.allocation_list_.Clear();
+  data.free_list_.Sort(&CompareFreeBlockAddress);
+  for (int i = 0; i < data.free_list_.length();) {
+    CodeRangeData::FreeBlock merged = data.free_list_[i];
     i++;
     // Add adjacent free blocks to the current merged block.
-    while (i < free_list_.length() &&
-           free_list_[i].start == merged.start + merged.size) {
-      merged.size += free_list_[i].size;
+    while (i < data.free_list_.length() &&
+           data.free_list_[i].start == merged.start + merged.size) {
+      merged.size += data.free_list_[i].size;
       i++;
     }
     if (merged.size > 0) {
-      allocation_list_.Add(merged);
+      data.allocation_list_.Add(merged);
     }
   }
-  free_list_.Clear();
+  data.free_list_.Clear();
 
-  for (current_allocation_block_index_ = 0;
-       current_allocation_block_index_ < allocation_list_.length();
-       current_allocation_block_index_++) {
-    if (requested <= allocation_list_[current_allocation_block_index_].size) {
+  for (data.current_allocation_block_index_ = 0;
+       data.current_allocation_block_index_ < data.allocation_list_.length();
+       data.current_allocation_block_index_++) {
+    if (requested <=
+      data.allocation_list_[data.current_allocation_block_index_].size) {
       return;  // Found a large enough allocation block.
     }
   }
@@ -225,26 +227,31 @@ void CodeRange::GetNextAllocationBlock(size_t requested) {
 
 
 void* CodeRange::AllocateRawMemory(const size_t requested, size_t* allocated) {
-  ASSERT(current_allocation_block_index_ < allocation_list_.length());
-  if (requested > allocation_list_[current_allocation_block_index_].size) {
+  CodeRangeData& data = v8_context()->code_range_data_;
+  ASSERT(data.current_allocation_block_index_ < data.allocation_list_.length());
+  if (requested >
+      data.allocation_list_[data.current_allocation_block_index_].size) {
     // Find an allocation block large enough.  This function call may
     // call V8::FatalProcessOutOfMemory if it cannot find a large enough block.
     GetNextAllocationBlock(requested);
   }
   // Commit the requested memory at the start of the current allocation block.
   *allocated = RoundUp(requested, Page::kPageSize);
-  FreeBlock current = allocation_list_[current_allocation_block_index_];
+  CodeRangeData::FreeBlock current =
+    data.allocation_list_[data.current_allocation_block_index_];
   if (*allocated >= current.size - Page::kPageSize) {
     // Don't leave a small free block, useless for a large object or chunk.
     *allocated = current.size;
   }
   ASSERT(*allocated <= current.size);
-  if (!code_range_->Commit(current.start, *allocated, true)) {
+  if (!data.code_range_->Commit(current.start, *allocated, true)) {
     *allocated = 0;
     return NULL;
   }
-  allocation_list_[current_allocation_block_index_].start += *allocated;
-  allocation_list_[current_allocation_block_index_].size -= *allocated;
+  data.allocation_list_[data.current_allocation_block_index_].start +=
+    *allocated;
+  data.allocation_list_[data.current_allocation_block_index_].size -=
+    *allocated;
   if (*allocated == current.size) {
     GetNextAllocationBlock(0);  // This block is used up, get the next one.
   }
@@ -253,52 +260,52 @@ void* CodeRange::AllocateRawMemory(const size_t requested, size_t* allocated) {
 
 
 void CodeRange::FreeRawMemory(void* address, size_t length) {
-  free_list_.Add(FreeBlock(address, length));
-  code_range_->Uncommit(address, length);
+  CodeRangeData& data = v8_context()->code_range_data_;
+  data.free_list_.Add(CodeRangeData::FreeBlock(address, length));
+  data.code_range_->Uncommit(address, length);
 }
 
 
 void CodeRange::TearDown() {
-    delete code_range_;  // Frees all memory in the virtual memory range.
-    code_range_ = NULL;
-    free_list_.Free();
-    allocation_list_.Free();
+    CodeRangeData& data = v8_context()->code_range_data_;
+    delete data.code_range_;  // Frees all memory in the virtual memory range.
+    data.code_range_ = NULL;
+    data.free_list_.Free();
+    data.allocation_list_.Free();
 }
 
 
 // -----------------------------------------------------------------------------
 // MemoryAllocator
 //
-int MemoryAllocator::capacity_   = 0;
-int MemoryAllocator::size_       = 0;
-
-VirtualMemory* MemoryAllocator::initial_chunk_ = NULL;
 
 // 270 is an estimate based on the static default heap size of a pair of 256K
 // semispaces and a 64M old generation.
 const int kEstimatedNumberOfChunks = 270;
-List<MemoryAllocator::ChunkInfo> MemoryAllocator::chunks_(
-    kEstimatedNumberOfChunks);
-List<int> MemoryAllocator::free_chunk_ids_(kEstimatedNumberOfChunks);
-int MemoryAllocator::max_nof_chunks_ = 0;
-int MemoryAllocator::top_ = 0;
 
+MemoryAllocatorData::MemoryAllocatorData()
+  :capacity_(0), size_(0), initial_chunk_(NULL),
+  free_chunk_ids_(kEstimatedNumberOfChunks), max_nof_chunks_(0), top_(0) {
+}
 
 void MemoryAllocator::Push(int free_chunk_id) {
-  ASSERT(max_nof_chunks_ > 0);
-  ASSERT(top_ < max_nof_chunks_);
-  free_chunk_ids_[top_++] = free_chunk_id;
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  ASSERT(data.max_nof_chunks_ > 0);
+  ASSERT(data.top_ < data.max_nof_chunks_);
+  data.free_chunk_ids_[data.top_++] = free_chunk_id;
 }
 
 
 int MemoryAllocator::Pop() {
-  ASSERT(top_ > 0);
-  return free_chunk_ids_[--top_];
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  ASSERT(data.top_ > 0);
+  return data.free_chunk_ids_[--data.top_];
 }
 
 
 bool MemoryAllocator::Setup(int capacity) {
-  capacity_ = RoundUp(capacity, Page::kPageSize);
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  data.capacity_ = RoundUp(capacity, Page::kPageSize);
 
   // Over-estimate the size of chunks_ array.  It assumes the expansion of old
   // space is always in the unit of a chunk (kChunkSize) except the last
@@ -309,45 +316,47 @@ bool MemoryAllocator::Setup(int capacity) {
   //
   // Reserve two chunk ids for semispaces, one for map space, one for old
   // space, and one for code space.
-  max_nof_chunks_ = (capacity_ / (kChunkSize - Page::kPageSize)) + 5;
-  if (max_nof_chunks_ > kMaxNofChunks) return false;
+  data.max_nof_chunks_ = (data.capacity_ / (kChunkSize - Page::kPageSize)) + 5;
+  if (data.max_nof_chunks_ > kMaxNofChunks) return false;
 
-  size_ = 0;
-  ChunkInfo info;  // uninitialized element.
-  for (int i = max_nof_chunks_ - 1; i >= 0; i--) {
-    chunks_.Add(info);
-    free_chunk_ids_.Add(i);
+  data.size_ = 0;
+  MemoryAllocatorData::ChunkInfo info;  // uninitialized element.
+  for (int i = data.max_nof_chunks_ - 1; i >= 0; i--) {
+    data.chunks_.Add(info);
+    data.free_chunk_ids_.Add(i);
   }
-  top_ = max_nof_chunks_;
+  data.top_ = data.max_nof_chunks_;
   return true;
 }
 
 
 void MemoryAllocator::TearDown() {
-  for (int i = 0; i < max_nof_chunks_; i++) {
-    if (chunks_[i].address() != NULL) DeleteChunk(i);
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  for (int i = 0; i < data.max_nof_chunks_; i++) {
+    if (data.chunks_[i].address() != NULL) DeleteChunk(i);
   }
-  chunks_.Clear();
-  free_chunk_ids_.Clear();
+  data.chunks_.Clear();
+  data.free_chunk_ids_.Clear();
 
-  if (initial_chunk_ != NULL) {
-    LOG(DeleteEvent("InitialChunk", initial_chunk_->address()));
-    delete initial_chunk_;
-    initial_chunk_ = NULL;
+  if (data.initial_chunk_ != NULL) {
+    LOG(DeleteEvent("InitialChunk", data.initial_chunk_->address()));
+    delete data.initial_chunk_;
+    data.initial_chunk_ = NULL;
   }
 
-  ASSERT(top_ == max_nof_chunks_);  // all chunks are free
-  top_ = 0;
-  capacity_ = 0;
-  size_ = 0;
-  max_nof_chunks_ = 0;
+  ASSERT(data.top_ == data.max_nof_chunks_);  // all chunks are free
+  data.top_ = 0;
+  data.capacity_ = 0;
+  data.size_ = 0;
+  data.max_nof_chunks_ = 0;
 }
 
 
 void* MemoryAllocator::AllocateRawMemory(const size_t requested,
                                          size_t* allocated,
                                          Executability executable) {
-  if (size_ + static_cast<int>(requested) > capacity_) return NULL;
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  if (data.size_ + static_cast<int>(requested) > data.capacity_) return NULL;
   void* mem;
   if (executable == EXECUTABLE  && CodeRange::exists()) {
     mem = CodeRange::AllocateRawMemory(requested, allocated);
@@ -355,8 +364,8 @@ void* MemoryAllocator::AllocateRawMemory(const size_t requested,
     mem = OS::Allocate(requested, allocated, (executable == EXECUTABLE));
   }
   int alloced = static_cast<int>(*allocated);
-  size_ += alloced;
-  Counters::memory_allocated.Increment(alloced);
+  data.size_ += alloced;
+  INCREMENT_COUNTER(memory_allocated, alloced);
   return mem;
 }
 
@@ -367,28 +376,30 @@ void MemoryAllocator::FreeRawMemory(void* mem, size_t length) {
   } else {
     OS::Free(mem, length);
   }
-  Counters::memory_allocated.Decrement(static_cast<int>(length));
-  size_ -= static_cast<int>(length);
-  ASSERT(size_ >= 0);
+  DECREMENT_COUNTER(memory_allocated, static_cast<int>(length));
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  data.size_ -= static_cast<int>(length);
+  ASSERT(data.size_ >= 0);
 }
 
 
 void* MemoryAllocator::ReserveInitialChunk(const size_t requested) {
-  ASSERT(initial_chunk_ == NULL);
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  ASSERT(data.initial_chunk_ == NULL);
 
-  initial_chunk_ = new VirtualMemory(requested);
-  CHECK(initial_chunk_ != NULL);
-  if (!initial_chunk_->IsReserved()) {
-    delete initial_chunk_;
-    initial_chunk_ = NULL;
+  data.initial_chunk_ = new VirtualMemory(requested);
+  CHECK(data.initial_chunk_ != NULL);
+  if (!data.initial_chunk_->IsReserved()) {
+    delete data.initial_chunk_;
+    data.initial_chunk_ = NULL;
     return NULL;
   }
 
   // We are sure that we have mapped a block of requested addresses.
-  ASSERT(initial_chunk_->size() == requested);
-  LOG(NewEvent("InitialChunk", initial_chunk_->address(), requested));
-  size_ += static_cast<int>(requested);
-  return initial_chunk_->address();
+  ASSERT(data.initial_chunk_->size() == requested);
+  LOG(NewEvent("InitialChunk", data.initial_chunk_->address(), requested));
+  data.size_ += static_cast<int>(requested);
+  return data.initial_chunk_->address();
 }
 
 
@@ -407,11 +418,12 @@ Page* MemoryAllocator::AllocatePages(int requested_pages, int* allocated_pages,
   if (requested_pages <= 0) return Page::FromAddress(NULL);
   size_t chunk_size = requested_pages * Page::kPageSize;
 
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
   // There is not enough space to guarantee the desired number pages can be
   // allocated.
-  if (size_ + static_cast<int>(chunk_size) > capacity_) {
+  if (data.size_ + static_cast<int>(chunk_size) > data.capacity_) {
     // Request as many pages as we can.
-    chunk_size = capacity_ - size_;
+    chunk_size = data.capacity_ - data.size_;
     requested_pages = static_cast<int>(chunk_size >> Page::kPageSizeBits);
 
     if (requested_pages <= 0) return Page::FromAddress(NULL);
@@ -428,7 +440,7 @@ Page* MemoryAllocator::AllocatePages(int requested_pages, int* allocated_pages,
   }
 
   int chunk_id = Pop();
-  chunks_[chunk_id].init(static_cast<Address>(chunk), chunk_size, owner);
+  data.chunks_[chunk_id].init(static_cast<Address>(chunk), chunk_size, owner);
 
   return InitializePagesInChunk(chunk_id, *allocated_pages, owner);
 }
@@ -436,22 +448,24 @@ Page* MemoryAllocator::AllocatePages(int requested_pages, int* allocated_pages,
 
 Page* MemoryAllocator::CommitPages(Address start, size_t size,
                                    PagedSpace* owner, int* num_pages) {
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
   ASSERT(start != NULL);
   *num_pages = PagesInChunk(start, size);
   ASSERT(*num_pages > 0);
-  ASSERT(initial_chunk_ != NULL);
+  ASSERT(data.initial_chunk_ != NULL);
   ASSERT(InInitialChunk(start));
   ASSERT(InInitialChunk(start + size - 1));
-  if (!initial_chunk_->Commit(start, size, owner->executable() == EXECUTABLE)) {
+  if (!data.initial_chunk_->Commit(start, size, owner->executable()
+    == EXECUTABLE)) {
     return Page::FromAddress(NULL);
   }
-  Counters::memory_allocated.Increment(static_cast<int>(size));
+  INCREMENT_COUNTER(memory_allocated, static_cast<int>(size));
 
   // So long as we correctly overestimated the number of chunks we should not
   // run out of chunk ids.
   CHECK(!OutOfChunkIds());
   int chunk_id = Pop();
-  chunks_[chunk_id].init(start, size, owner);
+  data.chunks_[chunk_id].init(start, size, owner);
   return InitializePagesInChunk(chunk_id, *num_pages, owner);
 }
 
@@ -459,26 +473,28 @@ Page* MemoryAllocator::CommitPages(Address start, size_t size,
 bool MemoryAllocator::CommitBlock(Address start,
                                   size_t size,
                                   Executability executable) {
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
   ASSERT(start != NULL);
   ASSERT(size > 0);
-  ASSERT(initial_chunk_ != NULL);
+  ASSERT(data.initial_chunk_ != NULL);
   ASSERT(InInitialChunk(start));
   ASSERT(InInitialChunk(start + size - 1));
 
-  if (!initial_chunk_->Commit(start, size, executable)) return false;
-  Counters::memory_allocated.Increment(static_cast<int>(size));
+  if (!data.initial_chunk_->Commit(start, size, executable)) return false;
+  INCREMENT_COUNTER(memory_allocated, static_cast<int>(size));
   return true;
 }
 
 bool MemoryAllocator::UncommitBlock(Address start, size_t size) {
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
   ASSERT(start != NULL);
   ASSERT(size > 0);
-  ASSERT(initial_chunk_ != NULL);
+  ASSERT(data.initial_chunk_ != NULL);
   ASSERT(InInitialChunk(start));
   ASSERT(InInitialChunk(start + size - 1));
 
-  if (!initial_chunk_->Uncommit(start, size)) return false;
-  Counters::memory_allocated.Decrement(static_cast<int>(size));
+  if (!data.initial_chunk_->Uncommit(start, size)) return false;
+  DECREMENT_COUNTER(memory_allocated, static_cast<int>(size));
   return true;
 }
 
@@ -487,12 +503,13 @@ Page* MemoryAllocator::InitializePagesInChunk(int chunk_id, int pages_in_chunk,
   ASSERT(IsValidChunk(chunk_id));
   ASSERT(pages_in_chunk > 0);
 
-  Address chunk_start = chunks_[chunk_id].address();
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  Address chunk_start = data.chunks_[chunk_id].address();
 
   Address low = RoundUp(chunk_start, Page::kPageSize);
 
 #ifdef DEBUG
-  size_t chunk_size = chunks_[chunk_id].size();
+  size_t chunk_size = data.chunks_[chunk_id].size();
   Address high = RoundDown(chunk_start + chunk_size, Page::kPageSize);
   ASSERT(pages_in_chunk <=
         ((OffsetFrom(high) - OffsetFrom(low)) / Page::kPageSize));
@@ -547,9 +564,10 @@ Page* MemoryAllocator::FreePages(Page* p) {
 
 
 void MemoryAllocator::DeleteChunk(int chunk_id) {
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
   ASSERT(IsValidChunk(chunk_id));
 
-  ChunkInfo& c = chunks_[chunk_id];
+  MemoryAllocatorData::ChunkInfo& c = data.chunks_[chunk_id];
 
   // We cannot free a chunk contained in the initial chunk because it was not
   // allocated with AllocateRawMemory.  Instead we uncommit the virtual
@@ -557,8 +575,8 @@ void MemoryAllocator::DeleteChunk(int chunk_id) {
   if (InInitialChunk(c.address())) {
     // TODO(1240712): VirtualMemory::Uncommit has a return value which
     // is ignored here.
-    initial_chunk_->Uncommit(c.address(), c.size());
-    Counters::memory_allocated.Decrement(static_cast<int>(c.size()));
+    data.initial_chunk_->Uncommit(c.address(), c.size());
+    DECREMENT_COUNTER(memory_allocated, static_cast<int>(c.size()));
   } else {
     LOG(DeleteEvent("PagedChunk", c.address()));
     FreeRawMemory(c.address(), c.size());
@@ -572,7 +590,9 @@ Page* MemoryAllocator::FindFirstPageInSameChunk(Page* p) {
   int chunk_id = GetChunkId(p);
   ASSERT(IsValidChunk(chunk_id));
 
-  Address low = RoundUp(chunks_[chunk_id].address(), Page::kPageSize);
+  Address low = RoundUp(
+    v8_context()->memory_allocator_data_.chunks_[chunk_id].address(),
+    Page::kPageSize);
   return Page::FromAddress(low);
 }
 
@@ -581,8 +601,9 @@ Page* MemoryAllocator::FindLastPageInSameChunk(Page* p) {
   int chunk_id = GetChunkId(p);
   ASSERT(IsValidChunk(chunk_id));
 
-  Address chunk_start = chunks_[chunk_id].address();
-  size_t chunk_size = chunks_[chunk_id].size();
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  Address chunk_start = data.chunks_[chunk_id].address();
+  size_t chunk_size = data.chunks_[chunk_id].size();
 
   Address high = RoundDown(chunk_start + chunk_size, Page::kPageSize);
   ASSERT(chunk_start <= p->address() && p->address() < high);
@@ -593,9 +614,10 @@ Page* MemoryAllocator::FindLastPageInSameChunk(Page* p) {
 
 #ifdef DEBUG
 void MemoryAllocator::ReportStatistics() {
-  float pct = static_cast<float>(capacity_ - size_) / capacity_;
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  float pct = static_cast<float>(data.capacity_ - data.size_) / data.capacity_;
   PrintF("  capacity: %d, used: %d, available: %%%d\n\n",
-         capacity_, size_, static_cast<int>(pct*100));
+         data.capacity_, data.size_, static_cast<int>(pct*100));
 }
 #endif
 

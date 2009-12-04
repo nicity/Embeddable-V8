@@ -37,8 +37,7 @@ namespace internal {
 
 
 FrameElement::ZoneObjectList* FrameElement::ConstantList() {
-  static ZoneObjectList list(10);
-  return &list;
+  return v8_context()->code_generator_data_.frame_element_constants_list();
 }
 
 

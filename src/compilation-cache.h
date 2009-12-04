@@ -31,6 +31,19 @@
 namespace v8 {
 namespace internal {
 
+class CompilationCachePrivateData;
+
+class CompilationCacheData {
+ public:
+  CompilationCachePrivateData& private_data_;
+ private:
+  CompilationCacheData();
+  ~CompilationCacheData();
+
+  friend class V8Context;
+  friend class CompilationCache;
+  DISALLOW_COPY_AND_ASSIGN(CompilationCacheData);
+};
 
 // The compilation cache keeps function boilerplates for compiled
 // scripts and evals. The boilerplates are looked up using the source

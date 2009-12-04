@@ -112,8 +112,8 @@ TEST(ExternalReferenceEncoder) {
   CHECK_EQ(make_code(DEBUG_ADDRESS, register_code(3)),
            Encode(encoder, Debug_Address(Debug::k_register_address, 3)));
   ExternalReference keyed_load_function_prototype =
-      ExternalReference(&Counters::keyed_load_function_prototype);
-  CHECK_EQ(make_code(STATS_COUNTER, Counters::k_keyed_load_function_prototype),
+      ExternalReference(&COUNTER(keyed_load_function_prototype));
+  CHECK_EQ(make_code(STATS_COUNTER, COUNTER(k_keyed_load_function_prototype)),
            encoder.Encode(keyed_load_function_prototype.address()));
   ExternalReference passed_function =
       ExternalReference::builtin_passed_function();
@@ -153,11 +153,11 @@ TEST(ExternalReferenceDecoder) {
   CHECK_EQ(AddressOf(Debug_Address(Debug::k_register_address, 3)),
            decoder.Decode(make_code(DEBUG_ADDRESS, register_code(3))));
   ExternalReference keyed_load_function =
-      ExternalReference(&Counters::keyed_load_function_prototype);
+      ExternalReference(&COUNTER(keyed_load_function_prototype));
   CHECK_EQ(keyed_load_function.address(),
            decoder.Decode(
                make_code(STATS_COUNTER,
-                         Counters::k_keyed_load_function_prototype)));
+                         COUNTER(k_keyed_load_function_prototype))));
   CHECK_EQ(ExternalReference::builtin_passed_function().address(),
            decoder.Decode(make_code(UNCLASSIFIED, 1)));
   CHECK_EQ(ExternalReference::the_hole_value_location().address(),

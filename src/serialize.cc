@@ -44,35 +44,62 @@
 namespace v8 {
 namespace internal {
 
+class ExternalReferenceTable;
+
+class SerializerPrivateData {
+ public:
+  ExternalReferenceTable* external_reference_table_;
+  HashMap* serialization_map_;
+  SerializerPrivateData()
+    :serialization_map_(NULL),
+    external_reference_table_(NULL) {
+  }
+};
+
+SerializerData::SerializerData()
+  :private_data_(*new SerializerPrivateData()),
+  serialization_enabled_(false),
+  too_late_to_enable_now_(false) {
+}
+
+SerializerData::~SerializerData() {
+  delete &private_data_;
+}
+
 // Mapping objects to their location after deserialization.
 // This is used during building, but not at runtime by V8.
 class SerializationAddressMapper {
  public:
   static bool IsMapped(HeapObject* obj) {
     EnsureMapExists();
-    return serialization_map_->Lookup(Key(obj), Hash(obj), false) != NULL;
+    return v8_context()->serializer_data_.private_data_.
+      serialization_map_->Lookup(Key(obj), Hash(obj), false) != NULL;
   }
 
   static int MappedTo(HeapObject* obj) {
     ASSERT(IsMapped(obj));
-    return reinterpret_cast<intptr_t>(serialization_map_->Lookup(Key(obj),
-                                      Hash(obj),
-                                      false)->value);
+    return reinterpret_cast<intptr_t>(v8_context()->serializer_data_.
+      private_data_.serialization_map_->Lookup(
+        Key(obj),
+        Hash(obj),
+        false)->value);
   }
 
   static void Map(HeapObject* obj, int to) {
     EnsureMapExists();
     ASSERT(!IsMapped(obj));
-    HashMap::Entry* entry =
-        serialization_map_->Lookup(Key(obj), Hash(obj), true);
+    HashMap::Entry* entry = v8_context()->serializer_data_.private_data_.
+      serialization_map_->Lookup(Key(obj), Hash(obj), true);
     entry->value = Value(to);
   }
 
   static void Zap() {
-    if (serialization_map_ != NULL) {
-      delete serialization_map_;
+    HashMap*& serialization_map = v8_context()->serializer_data_.
+      private_data_.serialization_map_;
+    if (serialization_map != NULL) {
+      delete serialization_map;
     }
-    serialization_map_ = NULL;
+    serialization_map = NULL;
   }
 
  private:
@@ -93,16 +120,15 @@ class SerializationAddressMapper {
   }
 
   static void EnsureMapExists() {
-    if (serialization_map_ == NULL) {
-      serialization_map_ = new HashMap(&SerializationMatchFun);
+    HashMap*& serialization_map = v8_context()->serializer_data_.
+      private_data_.serialization_map_;
+    if (serialization_map == NULL) {
+      serialization_map = new HashMap(&SerializationMatchFun);
     }
   }
-
-  static HashMap* serialization_map_;
 };
 
 
-HashMap* SerializationAddressMapper::serialization_map_ = NULL;
 
 
 
@@ -131,8 +157,10 @@ static int* GetInternalPointer(StatsCounter* counter) {
 class ExternalReferenceTable {
  public:
   static ExternalReferenceTable* instance() {
-    if (!instance_) instance_ = new ExternalReferenceTable();
-    return instance_;
+    ExternalReferenceTable*& instance = v8_context()->serializer_data_.
+      private_data_.external_reference_table_;
+    if (!instance) instance = new ExternalReferenceTable();
+    return instance;
   }
 
   int size() const { return refs_.length(); }
@@ -146,7 +174,6 @@ class ExternalReferenceTable {
   int max_id(int code) { return max_id_[code]; }
 
  private:
-  static ExternalReferenceTable* instance_;
 
   ExternalReferenceTable() : refs_(64) { PopulateTable(); }
   ~ExternalReferenceTable() { }
@@ -170,7 +197,6 @@ class ExternalReferenceTable {
 };
 
 
-ExternalReferenceTable* ExternalReferenceTable::instance_ = NULL;
 
 
 void ExternalReferenceTable::AddFromId(TypeCode type,
@@ -316,7 +342,7 @@ void ExternalReferenceTable::PopulateTable() {
 
   static const StatsRefTableEntry stats_ref_table[] = {
 #define COUNTER_ENTRY(name, caption) \
-  { &Counters::name, \
+  { &COUNTER(name), \
     Counters::k_##name, \
     "Counters::" #name },
 
@@ -547,9 +573,6 @@ ExternalReferenceDecoder::~ExternalReferenceDecoder() {
   DeleteArray(encodings_);
 }
 
-
-bool Serializer::serialization_enabled_ = false;
-bool Serializer::too_late_to_enable_now_ = false;
 
 
 Deserializer::Deserializer(SnapshotByteSource* source)

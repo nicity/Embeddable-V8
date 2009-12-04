@@ -90,7 +90,7 @@ void Builtins::Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm) {
   // -----------------------------------
 
   Label invoke, dont_adapt_arguments;
-  __ IncrementCounter(&Counters::arguments_adaptors, 1);
+  __ IncrementCounter(&COUNTER(arguments_adaptors), 1);
 
   Label enough, too_few;
   __ cmpq(rax, rbx);
@@ -688,7 +688,7 @@ static void ArrayNativeCode(MacroAssembler* masm,
                        r8,
                        kPreallocatedArrayElements,
                        call_generic_code);
-  __ IncrementCounter(&Counters::array_function_native, 1);
+  __ IncrementCounter(&COUNTER(array_function_native), 1);
   __ movq(rax, rbx);
   __ ret(kPointerSize);
 
@@ -719,7 +719,7 @@ static void ArrayNativeCode(MacroAssembler* masm,
                   r9,
                   true,
                   call_generic_code);
-  __ IncrementCounter(&Counters::array_function_native, 1);
+  __ IncrementCounter(&COUNTER(array_function_native), 1);
   __ movq(rax, rbx);
   __ ret(2 * kPointerSize);
 
@@ -741,7 +741,7 @@ static void ArrayNativeCode(MacroAssembler* masm,
                   r9,
                   false,
                   call_generic_code);
-  __ IncrementCounter(&Counters::array_function_native, 1);
+  __ IncrementCounter(&COUNTER(array_function_native), 1);
 
   // rax: argc
   // rbx: JSArray
@@ -1124,7 +1124,7 @@ void Builtins::Generate_JSConstructStubGeneric(MacroAssembler* masm) {
   SmiIndex index = masm->SmiToIndex(rbx, rbx, kPointerSizeLog2);
   __ lea(rsp, Operand(rsp, index.reg, index.scale, 1 * kPointerSize));
   __ push(rcx);
-  __ IncrementCounter(&Counters::constructed_objects, 1);
+  __ IncrementCounter(&COUNTER(constructed_objects), 1);
   __ ret(0);
 }
 

@@ -38,6 +38,19 @@
 namespace v8 {
 namespace internal {
 
+class StackGuardPrivateData {
+ public:
+  Thread::LocalStorageKey stack_limit_key;
+
+  StackGuardPrivateData()
+    :stack_limit_key(internal::Thread::CreateThreadLocalKey()) {
+  }
+};
+
+StackGuardData::StackGuardData()
+  :thread_local_(0),
+  stack_guard_private_data_(NULL) {
+}
 
 static Handle<Object> Invoke(bool construct,
                              Handle<JSFunction> func,
@@ -204,13 +217,14 @@ Handle<Object> Execution::GetConstructorDelegate(Handle<Object> object) {
 
 
 // Static state for stack guards.
-StackGuard::ThreadLocal StackGuard::thread_local_;
 
 
 bool StackGuard::IsStackOverflow() {
   ExecutionAccess access;
-  return (thread_local_.jslimit_ != kInterruptLimit &&
-          thread_local_.climit_ != kInterruptLimit);
+  StackGuardData::ThreadLocal& thread_local = v8_context()->
+    stack_guard_data_.thread_local_;
+  return (thread_local.jslimit_ != kInterruptLimit &&
+          thread_local.climit_ != kInterruptLimit);
 }
 
 
@@ -224,17 +238,19 @@ void StackGuard::EnableInterrupts() {
 
 void StackGuard::SetStackLimit(uintptr_t limit) {
   ExecutionAccess access;
+  StackGuardData::ThreadLocal& thread_local = v8_context()->
+    stack_guard_data_.thread_local_;
   // If the current limits are special (eg due to a pending interrupt) then
   // leave them alone.
   uintptr_t jslimit = SimulatorStack::JsLimitFromCLimit(limit);
-  if (thread_local_.jslimit_ == thread_local_.real_jslimit_) {
-    thread_local_.jslimit_ = jslimit;
+  if (thread_local.jslimit_ == thread_local.real_jslimit_) {
+    thread_local.jslimit_ = jslimit;
   }
-  if (thread_local_.climit_ == thread_local_.real_climit_) {
-    thread_local_.climit_ = limit;
+  if (thread_local.climit_ == thread_local.real_climit_) {
+    thread_local.climit_ = limit;
   }
-  thread_local_.real_climit_ = limit;
-  thread_local_.real_jslimit_ = jslimit;
+  thread_local.real_climit_ = limit;
+  thread_local.real_jslimit_ = jslimit;
 }
 
 
@@ -245,45 +261,48 @@ void StackGuard::DisableInterrupts() {
 
 
 bool StackGuard::IsSet(const ExecutionAccess& lock) {
-  return thread_local_.interrupt_flags_ != 0;
+  return v8_context()->stack_guard_data_.thread_local_.interrupt_flags_ != 0;
 }
 
 
 bool StackGuard::IsInterrupted() {
   ExecutionAccess access;
-  return thread_local_.interrupt_flags_ & INTERRUPT;
+  return v8_context()->
+    stack_guard_data_.thread_local_.interrupt_flags_ & INTERRUPT;
 }
 
 
 void StackGuard::Interrupt() {
   ExecutionAccess access;
-  thread_local_.interrupt_flags_ |= INTERRUPT;
+  v8_context()->stack_guard_data_.thread_local_.interrupt_flags_ |= INTERRUPT;
   set_limits(kInterruptLimit, access);
 }
 
 
 bool StackGuard::IsPreempted() {
   ExecutionAccess access;
-  return thread_local_.interrupt_flags_ & PREEMPT;
+  return v8_context()->
+    stack_guard_data_.thread_local_.interrupt_flags_ & PREEMPT;
 }
 
 
 void StackGuard::Preempt() {
   ExecutionAccess access;
-  thread_local_.interrupt_flags_ |= PREEMPT;
+  v8_context()->stack_guard_data_.thread_local_.interrupt_flags_ |= PREEMPT;
   set_limits(kInterruptLimit, access);
 }
 
 
 bool StackGuard::IsTerminateExecution() {
   ExecutionAccess access;
-  return thread_local_.interrupt_flags_ & TERMINATE;
+  return v8_context()->
+    stack_guard_data_.thread_local_.interrupt_flags_ & TERMINATE;
 }
 
 
 void StackGuard::TerminateExecution() {
   ExecutionAccess access;
-  thread_local_.interrupt_flags_ |= TERMINATE;
+  v8_context()->stack_guard_data_.thread_local_.interrupt_flags_ |= TERMINATE;
   set_limits(kInterruptLimit, access);
 }
 
@@ -291,27 +310,30 @@ void StackGuard::TerminateExecution() {
 #ifdef ENABLE_DEBUGGER_SUPPORT
 bool StackGuard::IsDebugBreak() {
   ExecutionAccess access;
-  return thread_local_.interrupt_flags_ & DEBUGBREAK;
+  return v8_context()->
+    stack_guard_data_.thread_local_.interrupt_flags_ & DEBUGBREAK;
 }
 
 
 void StackGuard::DebugBreak() {
   ExecutionAccess access;
-  thread_local_.interrupt_flags_ |= DEBUGBREAK;
+  v8_context()->stack_guard_data_.thread_local_.interrupt_flags_ |= DEBUGBREAK;
   set_limits(kInterruptLimit, access);
 }
 
 
 bool StackGuard::IsDebugCommand() {
   ExecutionAccess access;
-  return thread_local_.interrupt_flags_ & DEBUGCOMMAND;
+  return v8_context()->
+    stack_guard_data_.thread_local_.interrupt_flags_ & DEBUGCOMMAND;
 }
 
 
 void StackGuard::DebugCommand() {
   if (FLAG_debugger_auto_break) {
     ExecutionAccess access;
-    thread_local_.interrupt_flags_ |= DEBUGCOMMAND;
+    v8_context()->
+      stack_guard_data_.thread_local_.interrupt_flags_ |= DEBUGCOMMAND;
     set_limits(kInterruptLimit, access);
   }
 }
@@ -319,51 +341,69 @@ void StackGuard::DebugCommand() {
 
 void StackGuard::Continue(InterruptFlag after_what) {
   ExecutionAccess access;
-  thread_local_.interrupt_flags_ &= ~static_cast<int>(after_what);
-  if (thread_local_.interrupt_flags_ == 0) {
+  StackGuardData::ThreadLocal& thread_local = v8_context()->
+    stack_guard_data_.thread_local_;
+  thread_local.interrupt_flags_ &= ~static_cast<int>(after_what);
+  if (thread_local.interrupt_flags_ == 0) {
     reset_limits(access);
   }
 }
 
 
 int StackGuard::ArchiveSpacePerThread() {
-  return sizeof(ThreadLocal);
+  return sizeof(StackGuardData::ThreadLocal);
 }
 
 
 char* StackGuard::ArchiveStackGuard(char* to) {
   ExecutionAccess access;
-  memcpy(to, reinterpret_cast<char*>(&thread_local_), sizeof(ThreadLocal));
-  ThreadLocal blank;
-  thread_local_ = blank;
-  return to + sizeof(ThreadLocal);
+  StackGuardData::ThreadLocal& thread_local = v8_context()->
+    stack_guard_data_.thread_local_;
+  memcpy(
+    to,
+    reinterpret_cast<char*>(&thread_local),
+    sizeof(StackGuardData::ThreadLocal));
+  StackGuardData::ThreadLocal blank;
+  thread_local = blank;
+  return to + sizeof(StackGuardData::ThreadLocal);
 }
 
 
 char* StackGuard::RestoreStackGuard(char* from) {
   ExecutionAccess access;
-  memcpy(reinterpret_cast<char*>(&thread_local_), from, sizeof(ThreadLocal));
+  memcpy(
+    reinterpret_cast<char*>(&v8_context()->stack_guard_data_.thread_local_),
+    from,
+    sizeof(StackGuardData::ThreadLocal));
   Heap::SetStackLimits();
-  return from + sizeof(ThreadLocal);
+  return from + sizeof(StackGuardData::ThreadLocal);
 }
 
 
-static internal::Thread::LocalStorageKey stack_limit_key =
-    internal::Thread::CreateThreadLocalKey();
+void StackGuard::PostConstruct() {
+  V8Context* const v8context = v8_context();
+  v8context->stack_guard_data_.thread_local_.Clear();
+  v8context->stack_guard_data_.stack_guard_private_data_ =
+    new StackGuardPrivateData();
+}
 
+void StackGuard::PreDestroy() {
+  delete v8_context()->stack_guard_data_.stack_guard_private_data_;
+}
 
 void StackGuard::FreeThreadResources() {
+  StackGuardData& stack_guard_data = v8_context()->stack_guard_data_;
   Thread::SetThreadLocal(
-      stack_limit_key,
-      reinterpret_cast<void*>(thread_local_.real_climit_));
+    stack_guard_data.stack_guard_private_data_->stack_limit_key,
+    reinterpret_cast<void*>(stack_guard_data.thread_local_.real_climit_));
 }
 
 
-void StackGuard::ThreadLocal::Clear() {
-  real_jslimit_ = kIllegalLimit;
-  jslimit_ = kIllegalLimit;
-  real_climit_ = kIllegalLimit;
-  climit_ = kIllegalLimit;
+void StackGuardData::ThreadLocal::Clear() {
+  real_jslimit_ = StackGuard::kIllegalLimit;
+  jslimit_ = StackGuard::kIllegalLimit;
+  real_climit_ = StackGuard::kIllegalLimit;
+  climit_ = StackGuard::kIllegalLimit;
   nesting_ = 0;
   postpone_interrupts_nesting_ = 0;
   interrupt_flags_ = 0;
@@ -371,12 +411,13 @@ void StackGuard::ThreadLocal::Clear() {
 }
 
 
-void StackGuard::ThreadLocal::Initialize() {
-  if (real_climit_ == kIllegalLimit) {
+void StackGuardData::ThreadLocal::Initialize() {
+  if (real_climit_ == StackGuard::kIllegalLimit) {
     // Takes the address of the limit variable in order to find out where
     // the top of stack is right now.
-    uintptr_t limit = reinterpret_cast<uintptr_t>(&limit) - kLimitSize;
-    ASSERT(reinterpret_cast<uintptr_t>(&limit) > kLimitSize);
+    uintptr_t limit = reinterpret_cast<uintptr_t>(&limit) -
+      StackGuard::kLimitSize;
+    ASSERT(reinterpret_cast<uintptr_t>(&limit) > StackGuard::kLimitSize);
     real_jslimit_ = SimulatorStack::JsLimitFromCLimit(limit);
     jslimit_ = SimulatorStack::JsLimitFromCLimit(limit);
     real_climit_ = limit;
@@ -390,13 +431,15 @@ void StackGuard::ThreadLocal::Initialize() {
 
 
 void StackGuard::ClearThread(const ExecutionAccess& lock) {
-  thread_local_.Clear();
+  v8_context()->stack_guard_data_.thread_local_.Clear();
 }
 
 
 void StackGuard::InitThread(const ExecutionAccess& lock) {
-  thread_local_.Initialize();
-  void* stored_limit = Thread::GetThreadLocal(stack_limit_key);
+  StackGuardData& stack_guard_data = v8_context()->stack_guard_data_;
+  stack_guard_data.thread_local_.Initialize();
+  void* stored_limit = Thread::GetThreadLocal(
+    stack_guard_data.stack_guard_private_data_->stack_limit_key);
   // You should hold the ExecutionAccess lock when you call this.
   if (stored_limit != NULL) {
     StackGuard::SetStackLimit(reinterpret_cast<intptr_t>(stored_limit));

@@ -419,7 +419,7 @@ WeightScaler::~WeightScaler() {
 
 bool AnalyzeVariableUsage(FunctionLiteral* lit) {
   if (!FLAG_usage_computation) return true;
-  HistogramTimerScope timer(&Counters::usage_analysis);
+  HistogramTimerScope timer(&COUNTER(usage_analysis));
   return UsageComputer::Traverse(lit);
 }
 

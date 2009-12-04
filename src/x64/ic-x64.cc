@@ -289,7 +289,7 @@ void KeyedLoadIC::GenerateGeneric(MacroAssembler* masm) {
   // In case the loaded value is the_hole we have to consult GetProperty
   // to ensure the prototype chain is searched.
   __ j(equal, &slow);
-  __ IncrementCounter(&Counters::keyed_load_generic_smi, 1);
+  __ IncrementCounter(&COUNTER(keyed_load_generic_smi), 1);
   __ ret(0);
 
   // Check whether the elements is a pixel array.
@@ -308,7 +308,7 @@ void KeyedLoadIC::GenerateGeneric(MacroAssembler* masm) {
 
   // Slow case: Load name and receiver from stack and jump to runtime.
   __ bind(&slow);
-  __ IncrementCounter(&Counters::keyed_load_generic_slow, 1);
+  __ IncrementCounter(&COUNTER(keyed_load_generic_slow), 1);
   Generate(masm, ExternalReference(Runtime::kKeyedGetProperty));
   __ bind(&check_string);
   // The key is not a smi.
@@ -329,7 +329,7 @@ void KeyedLoadIC::GenerateGeneric(MacroAssembler* masm) {
   GenerateDictionaryLoad(masm, &slow, rbx, rcx, rdx, rax);
   GenerateCheckNonObjectOrLoaded(masm, &slow, rcx);
   __ movq(rax, rcx);
-  __ IncrementCounter(&Counters::keyed_load_generic_symbol, 1);
+  __ IncrementCounter(&COUNTER(keyed_load_generic_symbol), 1);
   __ ret(0);
   // If the hash field contains an array index pick it out. The assert checks
   // that the constants for the maximum number of digits for an array index
@@ -480,7 +480,7 @@ void KeyedLoadIC::GenerateExternalArray(MacroAssembler* masm,
 
   // Slow case: Load name and receiver from stack and jump to runtime.
   __ bind(&slow);
-  __ IncrementCounter(&Counters::keyed_load_external_array_slow, 1);
+  __ IncrementCounter(&COUNTER(keyed_load_external_array_slow), 1);
   Generate(masm, ExternalReference(Runtime::kKeyedGetProperty));
 }
 

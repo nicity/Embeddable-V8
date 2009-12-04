@@ -63,13 +63,15 @@ namespace v8 {
 
 
 #define EXCEPTION_PREAMBLE()                                      \
-  thread_local.IncrementCallDepth();                              \
+  v8_context()->handle_scope_implementer_.IncrementCallDepth();   \
   ASSERT(!i::Top::external_caught_exception());                   \
   bool has_pending_exception = false
 
 
 #define EXCEPTION_BAILOUT_CHECK(value)                                         \
   do {                                                                         \
+    i::HandleScopeImplementer& thread_local =                                  \
+      v8_context()->handle_scope_implementer_;                                 \
     thread_local.DecrementCallDepth();                                         \
     if (has_pending_exception) {                                               \
       if (thread_local.CallDepthIsZero() && i::Top::is_out_of_memory()) {      \
@@ -95,13 +97,11 @@ namespace v8 {
 // --- D a t a   t h a t   i s   s p e c i f i c   t o   a   t h r e a d ---
 
 
-static i::HandleScopeImplementer thread_local;
 
 
-// --- E x c e p t i o n   B e h a v i o r ---
 
 
-static FatalErrorCallback exception_behavior = NULL;
+
 int i::Internals::kJSObjectType = JS_OBJECT_TYPE;
 int i::Internals::kFirstNonstringType = FIRST_NONSTRING_TYPE;
 int i::Internals::kProxyType = PROXY_TYPE;
@@ -114,11 +114,12 @@ static void DefaultFatalErrorHandler(const char* location,
 
 
 
-static FatalErrorCallback& GetFatalErrorHandler() {
-  if (exception_behavior == NULL) {
-    exception_behavior = DefaultFatalErrorHandler;
+static FatalErrorCallback GetFatalErrorHandler() {
+  internal::V8Data& v8_data = v8_context()->v8_data_;
+  if (v8_data.exception_behavior() == NULL) {
+    v8_data.exception_behavior(DefaultFatalErrorHandler);
   }
-  return exception_behavior;
+  return v8_data.exception_behavior();
 }
 
 
@@ -180,7 +181,7 @@ void i::V8::FatalProcessOutOfMemory(const char* location) {
 
 
 void V8::SetFatalErrorHandler(FatalErrorCallback that) {
-  exception_behavior = that;
+  v8_context()->v8_data_.exception_behavior(that);
 }
 
 
@@ -248,7 +249,6 @@ static inline bool EmptyCheck(const char* location, const v8::Data* obj) {
 // --- S t a t i c s ---
 
 
-static i::StringInputBuffer write_input_buffer;
 
 
 static inline bool EnsureInitialized(const char* location) {
@@ -264,7 +264,7 @@ static inline bool EnsureInitialized(const char* location) {
 
 ImplementationUtilities::HandleScopeData*
     ImplementationUtilities::CurrentHandleScope() {
-  return &i::HandleScope::current_;
+  return &v8_context()->handle_scope_data_;
 }
 
 
@@ -326,7 +326,6 @@ v8::Handle<Value> ThrowException(v8::Handle<v8::Value> value) {
 
 RegisteredExtension* RegisteredExtension::first_extension_ = NULL;
 
-
 RegisteredExtension::RegisteredExtension(Extension* extension)
     : extension_(extension), state_(UNVISITED) { }
 
@@ -335,7 +334,6 @@ void RegisteredExtension::Register(RegisteredExtension* that) {
   that->next_ = RegisteredExtension::first_extension_;
   RegisteredExtension::first_extension_ = that;
 }
-
 
 void RegisterExtension(Extension* that) {
   RegisteredExtension* extension = new RegisteredExtension(that);
@@ -472,6 +470,8 @@ void Context::Enter() {
   if (IsDeadCheck("v8::Context::Enter()")) return;
   ENTER_V8;
   i::Handle<i::Context> env = Utils::OpenHandle(this);
+  i::HandleScopeImplementer& thread_local =
+    v8_context()->handle_scope_implementer_;
   thread_local.EnterContext(env);
 
   thread_local.SaveContext(i::Top::context());
@@ -481,6 +481,8 @@ void Context::Enter() {
 
 void Context::Exit() {
   if (!i::V8::IsRunning()) return;
+  i::HandleScopeImplementer& thread_local =
+    v8_context()->handle_scope_implementer_;
   if (!ApiCheck(thread_local.LeaveLastContext(),
                 "v8::Context::Exit()",
                 "Cannot exit non-entered context")) {
@@ -664,9 +666,6 @@ void FunctionTemplate::Inherit(v8::Handle<FunctionTemplate> value) {
 }
 
 
-// To distinguish the function templates, so that we can find them in the
-// function cache of the global context.
-static int next_serial_number = 0;
 
 
 Local<FunctionTemplate> FunctionTemplate::New(InvocationCallback callback,
@@ -679,7 +678,8 @@ Local<FunctionTemplate> FunctionTemplate::New(InvocationCallback callback,
   i::Handle<i::FunctionTemplateInfo> obj =
       i::Handle<i::FunctionTemplateInfo>::cast(struct_obj);
   InitializeFunctionTemplate(obj);
-  obj->set_serial_number(i::Smi::FromInt(next_serial_number++));
+  obj->set_serial_number(i::Smi::FromInt(
+    v8_context()->api_data_.next_serial_number_++));
   if (callback != 0) {
     if (data.IsEmpty()) data = v8::Undefined();
     Utils::ToLocal(obj)->SetCallHandler(callback, data);
@@ -2462,6 +2462,8 @@ int String::WriteUtf8(char* buffer, int capacity) const {
   LOG_API("String::WriteUtf8");
   ENTER_V8;
   i::Handle<i::String> str = Utils::OpenHandle(this);
+  i::StringInputBuffer& write_input_buffer =
+    v8_context()->api_data_.write_input_buffer_;
   write_input_buffer.Reset(0, *str);
   int len = str->length();
   // Encode the first K - 3 bytes directly into the buffer since we
@@ -2512,6 +2514,8 @@ int String::WriteAscii(char* buffer, int start, int length) const {
   if ( (length == -1) || (length > str->length() - start) )
     end = str->length() - start;
   if (end < 0) return 0;
+  i::StringInputBuffer& write_input_buffer = v8_context()->api_data_.
+    write_input_buffer_;
   write_input_buffer.Reset(start, *str);
   int i;
   for (i = 0; i < end; i++) {
@@ -2713,7 +2717,8 @@ void v8::V8::LowMemoryNotification() {
 
 
 const char* v8::V8::GetVersion() {
-  static v8::internal::EmbeddedVector<char, 128> buffer;
+  v8::internal::EmbeddedVector<char, 128>& buffer =
+    v8_context()->api_data_.buffer_;
   v8::internal::Version::GetString(buffer);
   return buffer.start();
 }
@@ -2845,7 +2850,8 @@ bool Context::InContext() {
 
 v8::Local<v8::Context> Context::GetEntered() {
   if (IsDeadCheck("v8::Context::GetEntered()")) return Local<Context>();
-  i::Handle<i::Object> last = thread_local.LastEnteredContext();
+  i::Handle<i::Object> last =
+    v8_context()->handle_scope_implementer_.LastEnteredContext();
   if (last.is_null()) return Local<Context>();
   i::Handle<i::Context> context = i::Handle<i::Context>::cast(last);
   return Utils::ToLocal(context);
@@ -3097,7 +3103,7 @@ static void DisposeExternalString(v8::Persistent<v8::Value> obj,
     if (resource != NULL) {
       const int total_size =
           static_cast<int>(resource->length() * sizeof(*resource->data()));
-      i::Counters::total_external_string_memory.Decrement(total_size);
+      DECREMENT_COUNTER(total_external_string_memory, total_size);
 
       // The object will continue to live in the JavaScript heap until the
       // handle is entirely cleaned out by the next GC. For example the
@@ -3128,7 +3134,7 @@ static void DisposeExternalAsciiString(v8::Persistent<v8::Value> obj,
     if (resource != NULL) {
       const int total_size =
           static_cast<int>(resource->length() * sizeof(*resource->data()));
-      i::Counters::total_external_string_memory.Decrement(total_size);
+      DECREMENT_COUNTER(total_external_string_memory, total_size);
 
       // The object will continue to live in the JavaScript heap until the
       // handle is entirely cleaned out by the next GC. For example the
@@ -3151,7 +3157,7 @@ Local<String> v8::String::NewExternal(
   ENTER_V8;
   const int total_size =
       static_cast<int>(resource->length() * sizeof(*resource->data()));
-  i::Counters::total_external_string_memory.Increment(total_size);
+  INCREMENT_COUNTER(total_external_string_memory, total_size);
   i::Handle<i::String> result = NewExternalStringHandle(resource);
   i::Handle<i::Object> handle = i::GlobalHandles::Create(*result);
   i::GlobalHandles::MakeWeak(handle.location(),
@@ -3187,7 +3193,7 @@ Local<String> v8::String::NewExternal(
   ENTER_V8;
   const int total_size =
       static_cast<int>(resource->length() * sizeof(*resource->data()));
-  i::Counters::total_external_string_memory.Increment(total_size);
+  INCREMENT_COUNTER(total_external_string_memory, total_size);
   i::Handle<i::String> result = NewExternalAsciiStringHandle(resource);
   i::Handle<i::Object> handle = i::GlobalHandles::Create(*result);
   i::GlobalHandles::MakeWeak(handle.location(),
@@ -3350,7 +3356,7 @@ Local<Integer> Integer::NewFromUnsigned(uint32_t value) {
 
 
 void V8::IgnoreOutOfMemoryException() {
-  thread_local.set_ignore_out_of_memory(true);
+  v8_context()->handle_scope_implementer_.set_ignore_out_of_memory(true);
 }
 
 
@@ -3836,17 +3842,17 @@ namespace internal {
 
 
 HandleScopeImplementer* HandleScopeImplementer::instance() {
-  return &thread_local;
+  return &v8_context()->handle_scope_implementer_;
 }
 
 
 void HandleScopeImplementer::FreeThreadResources() {
-  thread_local.Free();
+  v8_context()->handle_scope_implementer_.Free();
 }
 
 
 char* HandleScopeImplementer::ArchiveThread(char* storage) {
-  return thread_local.ArchiveThreadHelper(storage);
+  return v8_context()->handle_scope_implementer_.ArchiveThreadHelper(storage);
 }
 
 
@@ -3864,12 +3870,12 @@ char* HandleScopeImplementer::ArchiveThreadHelper(char* storage) {
 
 
 int HandleScopeImplementer::ArchiveSpacePerThread() {
-  return sizeof(thread_local);
+  return sizeof(HandleScopeImplementer);
 }
 
 
 char* HandleScopeImplementer::RestoreThread(char* storage) {
-  return thread_local.RestoreThreadHelper(storage);
+  return v8_context()->handle_scope_implementer_.RestoreThreadHelper(storage);
 }
 
 
@@ -3902,8 +3908,10 @@ void HandleScopeImplementer::IterateThis(ObjectVisitor* v) {
 void HandleScopeImplementer::Iterate(ObjectVisitor* v) {
   v8::ImplementationUtilities::HandleScopeData* current =
       v8::ImplementationUtilities::CurrentHandleScope();
-  thread_local.handle_scope_data_ = *current;
-  thread_local.IterateThis(v);
+  HandleScopeImplementer& handle_scope_implementer =
+    v8_context()->handle_scope_implementer_;
+  handle_scope_implementer.handle_scope_data_ = *current;
+  handle_scope_implementer.IterateThis(v);
 }
 
 

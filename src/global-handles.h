@@ -57,6 +57,47 @@ class ObjectGroup : public Malloced {
 
 typedef void (*WeakReferenceGuest)(Object* object, void* parameter);
 
+class GlobalHandlesPrivateData;
+
+class GlobalHandlesData {
+  // Internal node structure, one for each global handle.
+  class Node;
+
+  // Field always containing the number of weak and near-death handles.
+  int number_of_weak_handles_;
+
+  // Field always containing the number of weak and near-death handles
+  // to global objects.  These objects are also included in
+  // number_of_weak_handles_.
+  int number_of_global_object_weak_handles_;
+
+  // Global handles are kept in a single linked list pointed to by head_.
+  Node* head_;
+
+  // Free list for DESTROYED global handles not yet deallocated.
+  Node* first_free_;
+  // List of deallocated nodes.
+  // Deallocated nodes form a prefix of all the nodes and
+  // |first_deallocated| points to last deallocated node before
+  // |head|.  Those deallocated nodes are additionally linked
+  // by |next_free|:
+  //                                    1st deallocated  head
+  //                                           |          |
+  //                                           V          V
+  //    node          node        ...         node       node
+  //      .next      -> .next ->                .next ->
+  //   <- .next_free <- .next_free           <- .next_free
+  Node* first_deallocated_;
+
+  GlobalHandlesPrivateData& private_data_;
+  friend class GlobalHandles;
+  friend class V8Context;
+
+  GlobalHandlesData();
+  ~GlobalHandlesData();
+  DISALLOW_COPY_AND_ASSIGN(GlobalHandlesData);
+};
+
 class GlobalHandles : public AllStatic {
  public:
   // Creates a new global handle that is alive until Destroy is called.
@@ -76,14 +117,17 @@ class GlobalHandles : public AllStatic {
                        WeakReferenceCallback callback);
 
   // Returns the current number of weak handles.
-  static int NumberOfWeakHandles() { return number_of_weak_handles_; }
+  static int NumberOfWeakHandles() {
+    return v8_context()->global_handles_data_.number_of_weak_handles_;
+  }
 
   static void RecordStats(HeapStats* stats);
 
   // Returns the current number of weak handles to global objects.
   // These handles are also included in NumberOfWeakHandles().
   static int NumberOfGlobalObjectWeakHandles() {
-    return number_of_global_object_weak_handles_;
+    return v8_context()->global_handles_data_.
+      number_of_global_object_weak_handles_;
   }
 
   // Clear the weakness of a global handle.
@@ -135,43 +179,30 @@ class GlobalHandles : public AllStatic {
 #endif
   class Pool;
  private:
-  // Internal node structure, one for each global handle.
-  class Node;
-
-  // Field always containing the number of weak and near-death handles.
-  static int number_of_weak_handles_;
-
-  // Field always containing the number of weak and near-death handles
-  // to global objects.  These objects are also included in
-  // number_of_weak_handles_.
-  static int number_of_global_object_weak_handles_;
-
-  // Global handles are kept in a single linked list pointed to by head_.
-  static Node* head_;
-  static Node* head() { return head_; }
-  static void set_head(Node* value) { head_ = value; }
-
-  // Free list for DESTROYED global handles not yet deallocated.
-  static Node* first_free_;
-  static Node* first_free() { return first_free_; }
-  static void set_first_free(Node* value) { first_free_ = value; }
-
-  // List of deallocated nodes.
-  // Deallocated nodes form a prefix of all the nodes and
-  // |first_deallocated| points to last deallocated node before
-  // |head|.  Those deallocated nodes are additionally linked
-  // by |next_free|:
-  //                                    1st deallocated  head
-  //                                           |          |
-  //                                           V          V
-  //    node          node        ...         node       node
-  //      .next      -> .next ->                .next ->
-  //   <- .next_free <- .next_free           <- .next_free
-  static Node* first_deallocated_;
-  static Node* first_deallocated() { return first_deallocated_; }
-  static void set_first_deallocated(Node* value) {
-    first_deallocated_ = value;
+  typedef GlobalHandlesData::Node Node;
+  static Node* head() {
+    return v8_context()->global_handles_data_.head_;
   }
+
+  static void set_head(Node* value) {
+    v8_context()->global_handles_data_.head_ = value;
+  }
+
+  static Node* first_free() {
+    return v8_context()->global_handles_data_.first_free_;
+  }
+  static void set_first_free(Node* value) {
+    v8_context()->global_handles_data_.first_free_ = value;
+  }
+
+  static Node* first_deallocated() {
+    return v8_context()->global_handles_data_.first_deallocated_;
+  }
+  static void set_first_deallocated(Node* value) {
+    v8_context()->global_handles_data_.first_deallocated_ = value;
+  }
+
+  friend class GlobalHandlesData;
 };
 
 

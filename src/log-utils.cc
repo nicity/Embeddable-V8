@@ -118,77 +118,85 @@ int LogDynamicBuffer::WriteInternal(const char* data, int data_size) {
   return data_size;
 }
 
+LogData::LogData()
+  :is_stopped_(false),
+  Write(NULL),
+  output_handle_(NULL),
+  mutex_(NULL),
+  message_buffer_(NULL),
+  write_failure_handler(NULL),
+  output_buffer_(NULL) {
+}
 
-bool Log::is_stopped_ = false;
-Log::WritePtr Log::Write = NULL;
-FILE* Log::output_handle_ = NULL;
-LogDynamicBuffer* Log::output_buffer_ = NULL;
 // Must be the same message as in Logger::PauseProfiler.
-const char* Log::kDynamicBufferSeal = "profiler,\"pause\"\n";
-Mutex* Log::mutex_ = NULL;
-char* Log::message_buffer_ = NULL;
-
+const char Log::kDynamicBufferSeal[] = "profiler,\"pause\"\n";
 
 void Log::Init() {
-  mutex_ = OS::CreateMutex();
-  message_buffer_ = NewArray<char>(kMessageBufferSize);
+  LogData& log_data = v8_context()->log_data_;
+  log_data.mutex_ = OS::CreateMutex();
+  log_data.message_buffer_ = NewArray<char>(kMessageBufferSize);
 }
 
 
 void Log::OpenStdout() {
   ASSERT(!IsEnabled());
-  output_handle_ = stdout;
-  Write = WriteToFile;
+  LogData& log_data = v8_context()->log_data_;
+  log_data.output_handle_ = stdout;
+  log_data.Write = WriteToFile;
   Init();
 }
 
 
 void Log::OpenFile(const char* name) {
   ASSERT(!IsEnabled());
-  output_handle_ = OS::FOpen(name, OS::LogFileOpenMode);
-  Write = WriteToFile;
+  LogData& log_data = v8_context()->log_data_;
+  log_data.output_handle_ = OS::FOpen(name, OS::LogFileOpenMode);
+  log_data.Write = WriteToFile;
   Init();
 }
 
 
 void Log::OpenMemoryBuffer() {
   ASSERT(!IsEnabled());
-  output_buffer_ = new LogDynamicBuffer(
+  LogData& log_data = v8_context()->log_data_;
+  log_data.output_buffer_ = new LogDynamicBuffer(
       kDynamicBufferBlockSize, kMaxDynamicBufferSize,
       kDynamicBufferSeal, StrLength(kDynamicBufferSeal));
-  Write = WriteToMemory;
+  log_data.Write = WriteToMemory;
   Init();
 }
 
 
 void Log::Close() {
-  if (Write == WriteToFile) {
-    if (output_handle_ != NULL) fclose(output_handle_);
-    output_handle_ = NULL;
-  } else if (Write == WriteToMemory) {
-    delete output_buffer_;
-    output_buffer_ = NULL;
+  LogData& log_data = v8_context()->log_data_;
+  if (log_data.Write == WriteToFile) {
+    if (log_data.output_handle_ != NULL) fclose(log_data.output_handle_);
+    log_data.output_handle_ = NULL;
+  } else if (log_data.Write == WriteToMemory) {
+    delete log_data.output_buffer_;
+    log_data.output_buffer_ = NULL;
   } else {
-    ASSERT(Write == NULL);
+    ASSERT(log_data.Write == NULL);
   }
-  Write = NULL;
+  log_data.Write = NULL;
 
-  DeleteArray(message_buffer_);
-  message_buffer_ = NULL;
+  DeleteArray(log_data.message_buffer_);
+  log_data.message_buffer_ = NULL;
 
-  delete mutex_;
-  mutex_ = NULL;
+  delete log_data.mutex_;
+  log_data.mutex_ = NULL;
 
-  is_stopped_ = false;
+  log_data.is_stopped_ = false;
 }
 
 
 int Log::GetLogLines(int from_pos, char* dest_buf, int max_size) {
-  if (Write != WriteToMemory) return 0;
-  ASSERT(output_buffer_ != NULL);
+  LogData& log_data = v8_context()->log_data_;
+  if (log_data.Write != WriteToMemory) return 0;
+  ASSERT(log_data.output_buffer_ != NULL);
   ASSERT(from_pos >= 0);
   ASSERT(max_size >= 0);
-  int actual_size = output_buffer_->Read(from_pos, dest_buf, max_size);
+  int actual_size = log_data.output_buffer_->Read(from_pos, dest_buf, max_size);
   ASSERT(actual_size <= max_size);
   if (actual_size == 0) return 0;
 
@@ -200,18 +208,16 @@ int Log::GetLogLines(int from_pos, char* dest_buf, int max_size) {
   return actual_size;
 }
 
-
-LogMessageBuilder::WriteFailureHandler
-    LogMessageBuilder::write_failure_handler = NULL;
-
-
-LogMessageBuilder::LogMessageBuilder(): sl(Log::mutex_), pos_(0) {
-  ASSERT(Log::message_buffer_ != NULL);
+LogMessageBuilder::LogMessageBuilder()
+  :log_data_(v8_context()->log_data_),
+  sl(log_data_.mutex_),
+  pos_(0) {
+  ASSERT(log_data_.message_buffer_ != NULL);
 }
 
 
 void LogMessageBuilder::Append(const char* format, ...) {
-  Vector<char> buf(Log::message_buffer_ + pos_,
+  Vector<char> buf(log_data_.message_buffer_ + pos_,
                    Log::kMessageBufferSize - pos_);
   va_list args;
   va_start(args, format);
@@ -222,7 +228,7 @@ void LogMessageBuilder::Append(const char* format, ...) {
 
 
 void LogMessageBuilder::AppendVA(const char* format, va_list args) {
-  Vector<char> buf(Log::message_buffer_ + pos_,
+  Vector<char> buf(log_data_.message_buffer_ + pos_,
                    Log::kMessageBufferSize - pos_);
   int result = v8::internal::OS::VSNPrintF(buf, format, args);
 
@@ -238,7 +244,7 @@ void LogMessageBuilder::AppendVA(const char* format, va_list args) {
 
 void LogMessageBuilder::Append(const char c) {
   if (pos_ < Log::kMessageBufferSize) {
-    Log::message_buffer_[pos_++] = c;
+    log_data_.message_buffer_[pos_++] = c;
   }
   ASSERT(pos_ <= Log::kMessageBufferSize);
 }
@@ -316,7 +322,7 @@ void LogMessageBuilder::AppendStringPart(const char* str, int len) {
     ASSERT(len >= 0);
     if (len == 0) return;
   }
-  Vector<char> buf(Log::message_buffer_ + pos_,
+  Vector<char> buf(log_data_.message_buffer_ + pos_,
                    Log::kMessageBufferSize - pos_);
   OS::StrNCpy(buf, str, len);
   pos_ += len;
@@ -325,7 +331,7 @@ void LogMessageBuilder::AppendStringPart(const char* str, int len) {
 
 
 bool LogMessageBuilder::StoreInCompressor(LogRecordCompressor* compressor) {
-  return compressor->Store(Vector<const char>(Log::message_buffer_, pos_));
+  return compressor->Store(Vector<const char>(log_data_.message_buffer_, pos_));
 }
 
 
@@ -333,7 +339,7 @@ bool LogMessageBuilder::RetrieveCompressedPrevious(
     LogRecordCompressor* compressor, const char* prefix) {
   pos_ = 0;
   if (prefix[0] != '\0') Append(prefix);
-  Vector<char> prev_record(Log::message_buffer_ + pos_,
+  Vector<char> prev_record(log_data_.message_buffer_ + pos_,
                            Log::kMessageBufferSize - pos_);
   const bool has_prev = compressor->RetrievePreviousCompressed(&prev_record);
   if (!has_prev) return false;
@@ -344,18 +350,18 @@ bool LogMessageBuilder::RetrieveCompressedPrevious(
 
 void LogMessageBuilder::WriteToLogFile() {
   ASSERT(pos_ <= Log::kMessageBufferSize);
-  const int written = Log::Write(Log::message_buffer_, pos_);
-  if (written != pos_ && write_failure_handler != NULL) {
-    write_failure_handler();
+  const int written = log_data_.Write(log_data_.message_buffer_, pos_);
+  if (written != pos_ && log_data_.write_failure_handler != NULL) {
+    log_data_.write_failure_handler();
   }
 }
 
 
 void LogMessageBuilder::WriteCStringToLogFile(const char* str) {
   const int len = StrLength(str);
-  const int written = Log::Write(str, len);
-  if (written != len && write_failure_handler != NULL) {
-    write_failure_handler();
+  const int written = log_data_.Write(str, len);
+  if (written != len && log_data_.write_failure_handler != NULL) {
+    log_data_.write_failure_handler();
   }
 }
 

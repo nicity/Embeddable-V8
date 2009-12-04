@@ -38,9 +38,17 @@ namespace internal {
 // -----------------------------------------------------------------------
 // StubCache implementation.
 
+StubCacheData::StubCacheData() {
+  for (int i = 0; i < kPrimaryTableSize; ++i) {
+    primary_[i].key = NULL;
+    primary_[i].value = NULL;
+  }
 
-StubCache::Entry StubCache::primary_[StubCache::kPrimaryTableSize];
-StubCache::Entry StubCache::secondary_[StubCache::kSecondaryTableSize];
+  for (int i = 0; i < kSecondaryTableSize; ++i) {
+    secondary_[i].key = NULL;
+    secondary_[i].value = NULL;
+  }
+}
 
 void StubCache::Initialize(bool create_heap_objects) {
   ASSERT(IsPowerOf2(kPrimaryTableSize));
@@ -73,7 +81,8 @@ Code* StubCache::Set(String* name, Map* map, Code* code) {
 
   // Compute the primary entry.
   int primary_offset = PrimaryOffset(name, flags, map);
-  Entry* primary = entry(primary_, primary_offset);
+  StubCacheData& stub_cache_data = v8_context()->stub_cache_data_;
+  Entry* primary = entry(stub_cache_data.primary_, primary_offset);
   Code* hit = primary->value;
 
   // If the primary entry has useful data in it, we retire it to the
@@ -82,7 +91,7 @@ Code* StubCache::Set(String* name, Map* map, Code* code) {
     Code::Flags primary_flags = Code::RemoveTypeFromFlags(hit->flags());
     int secondary_offset =
         SecondaryOffset(primary->key, primary_flags, primary_offset);
-    Entry* secondary = entry(secondary_, secondary_offset);
+    Entry* secondary = entry(stub_cache_data.secondary_, secondary_offset);
     *secondary = *primary;
   }
 
@@ -712,13 +721,14 @@ Object* StubCache::ComputeLazyCompile(int argc) {
 
 
 void StubCache::Clear() {
+  StubCacheData& stub_cache_data = v8_context()->stub_cache_data_;
   for (int i = 0; i < kPrimaryTableSize; i++) {
-    primary_[i].key = Heap::empty_string();
-    primary_[i].value = Builtins::builtin(Builtins::Illegal);
+    stub_cache_data.primary_[i].key = Heap::empty_string();
+    stub_cache_data.primary_[i].value = Builtins::builtin(Builtins::Illegal);
   }
   for (int j = 0; j < kSecondaryTableSize; j++) {
-    secondary_[j].key = Heap::empty_string();
-    secondary_[j].value = Builtins::builtin(Builtins::Illegal);
+    stub_cache_data.secondary_[j].key = Heap::empty_string();
+    stub_cache_data.secondary_[j].value = Builtins::builtin(Builtins::Illegal);
   }
 }
 
@@ -926,7 +936,7 @@ Object* StubCompiler::CompileCallInitialize(Code::Flags flags) {
   CallIC::GenerateInitialize(masm(), argc);
   Object* result = GetCodeWithFlags(flags, "CompileCallInitialize");
   if (!result->IsFailure()) {
-    Counters::call_initialize_stubs.Increment();
+    INC_COUNTER(call_initialize_stubs);
     Code* code = Code::cast(result);
     USE(code);
     LOG(CodeCreateEvent(Logger::CALL_INITIALIZE_TAG,
@@ -944,7 +954,7 @@ Object* StubCompiler::CompileCallPreMonomorphic(Code::Flags flags) {
   CallIC::GenerateInitialize(masm(), argc);
   Object* result = GetCodeWithFlags(flags, "CompileCallPreMonomorphic");
   if (!result->IsFailure()) {
-    Counters::call_premonomorphic_stubs.Increment();
+    INC_COUNTER(call_premonomorphic_stubs);
     Code* code = Code::cast(result);
     USE(code);
     LOG(CodeCreateEvent(Logger::CALL_PRE_MONOMORPHIC_TAG,
@@ -960,7 +970,7 @@ Object* StubCompiler::CompileCallNormal(Code::Flags flags) {
   CallIC::GenerateNormal(masm(), argc);
   Object* result = GetCodeWithFlags(flags, "CompileCallNormal");
   if (!result->IsFailure()) {
-    Counters::call_normal_stubs.Increment();
+    INC_COUNTER(call_normal_stubs);
     Code* code = Code::cast(result);
     USE(code);
     LOG(CodeCreateEvent(Logger::CALL_NORMAL_TAG,
@@ -976,7 +986,7 @@ Object* StubCompiler::CompileCallMegamorphic(Code::Flags flags) {
   CallIC::GenerateMegamorphic(masm(), argc);
   Object* result = GetCodeWithFlags(flags, "CompileCallMegamorphic");
   if (!result->IsFailure()) {
-    Counters::call_megamorphic_stubs.Increment();
+    INC_COUNTER(call_megamorphic_stubs);
     Code* code = Code::cast(result);
     USE(code);
     LOG(CodeCreateEvent(Logger::CALL_MEGAMORPHIC_TAG,
@@ -992,7 +1002,7 @@ Object* StubCompiler::CompileCallMiss(Code::Flags flags) {
   CallIC::GenerateMiss(masm(), argc);
   Object* result = GetCodeWithFlags(flags, "CompileCallMiss");
   if (!result->IsFailure()) {
-    Counters::call_megamorphic_stubs.Increment();
+    INC_COUNTER(call_megamorphic_stubs);
     Code* code = Code::cast(result);
     USE(code);
     LOG(CodeCreateEvent(Logger::CALL_MISS_TAG, code, code->arguments_count()));

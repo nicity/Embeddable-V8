@@ -65,7 +65,8 @@ class V8NameConverter: public disasm::NameConverter {
 
 
 const char* V8NameConverter::NameOfAddress(byte* pc) const {
-  static v8::internal::EmbeddedVector<char, 128> buffer;
+  v8::internal::EmbeddedVector<char, 128> buffer =
+    v8_context()->disassembler_data_->buffer_;
 
   const char* name = Builtins::Lookup(pc);
   if (name != NULL) {
@@ -305,6 +306,14 @@ void Disassembler::Decode(FILE* f, Code* code) {
   byte* end = begin + Code::cast(code)->instruction_size();
   V8NameConverter v8NameConverter(code);
   DecodeIt(f, v8NameConverter, begin, end);
+}
+
+void Disassembler::PostConstruct() {
+  v8_context()->disassembler_data_ = new disasm::DisassemblerData();
+}
+
+void Disassembler::PreDestroy() {
+  delete v8_context()->disassembler_data_;
 }
 
 #else  // ENABLE_DISASSEMBLER

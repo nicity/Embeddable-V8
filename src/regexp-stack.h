@@ -31,6 +31,44 @@
 namespace v8 {
 namespace internal {
 
+class RegExpStackData {
+ public:
+  unibrow::Mapping<unibrow::Ecma262Canonicalize> canonicalize_;
+  unibrow::Mapping<unibrow::Ecma262UnCanonicalize> uncanonicalize_;
+  unibrow::Mapping<unibrow::CanonicalizationRange> canonrange_;
+ private:
+  // Structure holding the allocated memory, size and limit.
+  // Structure holding the allocated memory, size and limit.
+  struct ThreadLocal {
+    ThreadLocal()
+        : memory_(NULL),
+          memory_size_(0),
+          limit_(reinterpret_cast<Address>(kMemoryTop)) {}
+    // If memory_size_ > 0 then memory_ must be non-NULL.
+    Address memory_;
+    size_t memory_size_;
+    Address limit_;
+    void Free();
+
+   private:
+    ThreadLocal(const ThreadLocal& another);
+  };
+
+  // Artificial limit used when no memory has been allocated.
+  static const uintptr_t kMemoryTop = static_cast<uintptr_t>(-1);
+
+  ThreadLocal thread_local_;
+
+  int* static_offsets_vector_;
+
+  friend class RegExpStack;
+  friend class V8Context;
+  friend class OffsetsVector;
+
+  RegExpStackData();
+  DISALLOW_COPY_AND_ASSIGN(RegExpStackData);
+};
+
 // Maintains a per-v8thread stack area that can be used by irregexp
 // implementation for its backtracking stack.
 // Since there is only one stack area, the Irregexp implementation is not
@@ -49,19 +87,25 @@ class RegExpStack {
 
   // Gives the top of the memory used as stack.
   static Address stack_base() {
-    ASSERT(thread_local_.memory_size_ != 0);
-    return thread_local_.memory_ + thread_local_.memory_size_;
+    RegExpStackData::ThreadLocal & thread_local = v8_context()->
+      reg_exp_stack_data_.thread_local_;
+    ASSERT(thread_local.memory_size_ != 0);
+    return thread_local.memory_ + thread_local.memory_size_;
   }
 
   // The total size of the memory allocated for the stack.
-  static size_t stack_capacity() { return thread_local_.memory_size_; }
+  static size_t stack_capacity() {
+    return v8_context()->reg_exp_stack_data_.thread_local_.memory_size_;
+  }
 
   // If the stack pointer gets below the limit, we should react and
   // either grow the stack or report an out-of-stack exception.
   // There is only a limited number of locations below the stack limit,
   // so users of the stack should check the stack limit during any
   // sequence of pushes longer that this.
-  static Address* limit_address() { return &(thread_local_.limit_); }
+  static Address* limit_address() {
+    return &(v8_context()->reg_exp_stack_data_.thread_local_.limit_);
+  }
 
   // Ensures that there is a memory area with at least the specified size.
   // If passing zero, the default/minimum size buffer is allocated.
@@ -69,15 +113,15 @@ class RegExpStack {
 
   // Thread local archiving.
   static int ArchiveSpacePerThread() {
-    return static_cast<int>(sizeof(thread_local_));
+    return static_cast<int>(sizeof(RegExpStackData::ThreadLocal));
   }
   static char* ArchiveStack(char* to);
   static char* RestoreStack(char* from);
-  static void FreeThreadResources() { thread_local_.Free(); }
+  static void FreeThreadResources() {
+    v8_context()->reg_exp_stack_data_.thread_local_.Free();
+  }
 
  private:
-  // Artificial limit used when no memory has been allocated.
-  static const uintptr_t kMemoryTop = static_cast<uintptr_t>(-1);
 
   // Minimal size of allocated stack area.
   static const size_t kMinimumStackSize = 1 * KB;
@@ -85,25 +129,10 @@ class RegExpStack {
   // Maximal size of allocated stack area.
   static const size_t kMaximumStackSize = 64 * MB;
 
-  // Structure holding the allocated memory, size and limit.
-  struct ThreadLocal {
-    ThreadLocal()
-        : memory_(NULL),
-          memory_size_(0),
-          limit_(reinterpret_cast<Address>(kMemoryTop)) {}
-    // If memory_size_ > 0 then memory_ must be non-NULL.
-    Address memory_;
-    size_t memory_size_;
-    Address limit_;
-    void Free();
-  };
-
   // Resets the buffer if it has grown beyond the default/minimum size.
   // After this, the buffer is either the default size, or it is empty, so
   // you have to call EnsureCapacity before using it again.
   static void Reset();
-
-  static ThreadLocal thread_local_;
 };
 
 }}  // namespace v8::internal

@@ -43,15 +43,32 @@ namespace internal {
 // validates the map chain as in the mono-morphic case.
 
 class SCTableReference;
-
-class StubCache : public AllStatic {
+class StubCacheTypes {
  public:
   struct Entry {
     String* key;
     Code* value;
   };
 
+  static const int kPrimaryTableSize = 2048;
+  static const int kSecondaryTableSize = 512;
+};
 
+class StubCacheData:public StubCacheTypes {
+  Entry primary_[kPrimaryTableSize];
+  Entry secondary_[kSecondaryTableSize];
+
+  StubCacheData();
+
+  friend class StubCache;
+  friend class V8Context;
+  friend class SCTableReference;
+
+  DISALLOW_COPY_AND_ASSIGN(StubCacheData);
+};
+
+class StubCache : public AllStatic, public StubCacheTypes {
+ public:
   static void Initialize(bool create_heap_objects);
 
   // Computes the right stub matching. Inserts the result in the
@@ -213,12 +230,6 @@ class StubCache : public AllStatic {
   };
 
  private:
-  friend class SCTableReference;
-  static const int kPrimaryTableSize = 2048;
-  static const int kSecondaryTableSize = 512;
-  static Entry primary_[];
-  static Entry secondary_[];
-
   // Computes the hashed offsets for primary and secondary caches.
   static int PrimaryOffset(String* name, Code::Flags flags, Map* map) {
     // This works well because the heap object tag size and the hash
@@ -288,8 +299,10 @@ class SCTableReference {
 
   static StubCache::Entry* first_entry(StubCache::Table table) {
     switch (table) {
-      case StubCache::kPrimary: return StubCache::primary_;
-      case StubCache::kSecondary: return StubCache::secondary_;
+      case StubCache::kPrimary:
+        return v8_context()->stub_cache_data_.primary_;
+      case StubCache::kSecondary:
+        return v8_context()->stub_cache_data_.secondary_;
     }
     UNREACHABLE();
     return NULL;

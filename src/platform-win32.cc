@@ -393,11 +393,13 @@ const char* Time::GuessTimezoneNameFromBias(int bias) {
   }
 }
 
+static MutexLockAdapter time_lock(OS::CreateMutex());
 
 // Initialize timezone information. The timezone information is obtained from
 // windows. If we cannot get the timezone information we fall back to CET.
 // Please notice that this code is not thread-safe.
 void Time::TzSet() {
+  V8SharedStateLocker time_locker(&time_lock);
   // Just return if timezone information has already been initialized.
   if (tz_initialized_) return;
 
@@ -505,7 +507,6 @@ void Time::SetToCurrentTime() {
   DWORD elapsed = ticks_now - init_ticks;
   this->time_.t_ = init_time.t_ + (static_cast<int64_t>(elapsed) * 10000);
 }
-
 
 // Return the local timezone offset in milliseconds east of UTC. This
 // takes into account whether daylight saving is in effect at the time.
@@ -789,16 +790,19 @@ void OS::StrNCpy(Vector<char> dest, const char* src, size_t n) {
 static void* lowest_ever_allocated = reinterpret_cast<void*>(-1);
 static void* highest_ever_allocated = reinterpret_cast<void*>(0);
 
+static MutexLockAdapter heap_limits_lock(OS::CreateMutex());
 
 static void UpdateAllocatedSpaceLimits(void* address, int size) {
-  lowest_ever_allocated = Min(lowest_ever_allocated, address);
-  highest_ever_allocated =
-      Max(highest_ever_allocated,
-          reinterpret_cast<void*>(reinterpret_cast<char*>(address) + size));
+  V8SharedStateLocker heap_limits_locker(&heap_limits_lock);
+  lowest_ever_allocated = Min(
+    lowest_ever_allocated, reinterpret_cast<void*>(address));
+  highest_ever_allocated = Max(highest_ever_allocated,
+    reinterpret_cast<void*>(reinterpret_cast<char*>(address) + size));
 }
 
 
 bool OS::IsOutsideAllocatedSpace(void* pointer) {
+  V8SharedStateLocker heap_limits_locker(&heap_limits_lock);
   if (pointer < lowest_ever_allocated || pointer >= highest_ever_allocated)
     return true;
   // Ask the Windows API
@@ -812,7 +816,7 @@ bool OS::IsOutsideAllocatedSpace(void* pointer) {
 // of two. The reason for always returning a power of two is that the
 // rounding up in OS::Allocate expects that.
 static size_t GetPageSize() {
-  static size_t page_size = 0;
+  static volatile size_t page_size = 0;
   if (page_size == 0) {
     SYSTEM_INFO info;
     GetSystemInfo(&info);

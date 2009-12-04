@@ -251,11 +251,27 @@ class KeywordMatcher {
   void Step(uc32 input);
 };
 
+class ScannerData {
+ public:
+  unibrow::Predicate<unibrow::WhiteSpace, 128> kIsWhiteSpace_;
+ private:
+  unibrow::Predicate<IdentifierStart, 128> kIsIdentifierStart_;
+  unibrow::Predicate<IdentifierPart, 128> kIsIdentifierPart_;
+  unibrow::Predicate<unibrow::LineTerminator, 128> kIsLineTerminator_;
+
+  typedef unibrow::Utf8InputBuffer<1024> Utf8Decoder;
+  StaticResource<Utf8Decoder> utf8_decoder_;
+
+  friend class V8Context;
+  friend class Scanner;
+  ScannerData();
+  DISALLOW_COPY_AND_ASSIGN(ScannerData);
+};
 
 class Scanner {
  public:
 
-  typedef unibrow::Utf8InputBuffer<1024> Utf8Decoder;
+  typedef ScannerData::Utf8Decoder Utf8Decoder;
 
   // Construction
   explicit Scanner(bool is_pre_parsing);
@@ -334,16 +350,13 @@ class Scanner {
   Handle<String> SubString(int start_pos, int end_pos);
   bool stack_overflow() { return stack_overflow_; }
 
-  static StaticResource<Utf8Decoder>* utf8_decoder() { return &utf8_decoder_; }
+  static StaticResource<Utf8Decoder>* utf8_decoder() {
+    return &v8_context()->scanner_data_.utf8_decoder_;
+  }
 
   // Tells whether the buffer contains an identifier (no escapes).
   // Used for checking if a property name is an identifier.
   static bool IsIdentifier(unibrow::CharacterStream* buffer);
-
-  static unibrow::Predicate<IdentifierStart, 128> kIsIdentifierStart;
-  static unibrow::Predicate<IdentifierPart, 128> kIsIdentifierPart;
-  static unibrow::Predicate<unibrow::LineTerminator, 128> kIsLineTerminator;
-  static unibrow::Predicate<unibrow::WhiteSpace, 128> kIsWhiteSpace;
 
   static const int kCharacterLookaheadBufferSize = 1;
 
@@ -361,8 +374,6 @@ class Scanner {
   UTF8Buffer literal_buffer_2_;
 
   bool stack_overflow_;
-  static StaticResource<Utf8Decoder> utf8_decoder_;
-
   // One Unicode character look-ahead; c0_ < 0 at the end of the input.
   uc32 c0_;
 
@@ -377,6 +388,7 @@ class Scanner {
   TokenDesc next_;     // desc for next token (one token look-ahead)
   bool has_line_terminator_before_next_;
   bool is_pre_parsing_;
+  ScannerData& scanner_data_;
 
   // Literal buffer support
   void StartLiteral();

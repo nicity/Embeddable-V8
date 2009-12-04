@@ -177,13 +177,15 @@ bool Page::IsRSetSet(Address address, int offset) {
 bool MemoryAllocator::IsValidChunk(int chunk_id) {
   if (!IsValidChunkId(chunk_id)) return false;
 
-  ChunkInfo& c = chunks_[chunk_id];
+  MemoryAllocatorData::ChunkInfo& c =
+    v8_context()->memory_allocator_data_.chunks_[chunk_id];
   return (c.address() != NULL) && (c.size() != 0) && (c.owner() != NULL);
 }
 
 
 bool MemoryAllocator::IsValidChunkId(int chunk_id) {
-  return (0 <= chunk_id) && (chunk_id < max_nof_chunks_);
+  return (0 <= chunk_id) &&
+    (chunk_id < v8_context()->memory_allocator_data_.max_nof_chunks_);
 }
 
 
@@ -193,7 +195,8 @@ bool MemoryAllocator::IsPageInSpace(Page* p, PagedSpace* space) {
   int chunk_id = GetChunkId(p);
   if (!IsValidChunkId(chunk_id)) return false;
 
-  ChunkInfo& c = chunks_[chunk_id];
+  MemoryAllocatorData::ChunkInfo& c =
+    v8_context()->memory_allocator_data_.chunks_[chunk_id];
   return (c.address() <= p->address()) &&
          (p->address() < c.address() + c.size()) &&
          (space == c.owner());
@@ -224,15 +227,16 @@ void MemoryAllocator::SetNextPage(Page* prev, Page* next) {
 PagedSpace* MemoryAllocator::PageOwner(Page* page) {
   int chunk_id = GetChunkId(page);
   ASSERT(IsValidChunk(chunk_id));
-  return chunks_[chunk_id].owner();
+  return v8_context()->memory_allocator_data_.chunks_[chunk_id].owner();
 }
 
 
 bool MemoryAllocator::InInitialChunk(Address address) {
-  if (initial_chunk_ == NULL) return false;
+  MemoryAllocatorData& data = v8_context()->memory_allocator_data_;
+  if (data.initial_chunk_ == NULL) return false;
 
-  Address start = static_cast<Address>(initial_chunk_->address());
-  return (start <= address) && (address < start + initial_chunk_->size());
+  Address start = static_cast<Address>(data.initial_chunk_->address());
+  return (start <= address) && (address < start + data.initial_chunk_->size());
 }
 
 

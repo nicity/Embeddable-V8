@@ -2257,7 +2257,7 @@ Object* JSObject::NormalizeProperties(PropertyNormalizationMode mode,
 
   set_properties(dictionary);
 
-  Counters::props_to_dictionary.Increment();
+  INC_COUNTER(props_to_dictionary);
 
 #ifdef DEBUG
   if (FLAG_trace_normalization) {
@@ -2304,7 +2304,7 @@ Object* JSObject::NormalizeElements() {
   // Switch to using the dictionary as the backing storage for elements.
   set_elements(dictionary);
 
-  Counters::elements_to_dictionary.Increment();
+  INC_COUNTER(elements_to_dictionary);
 
 #ifdef DEBUG
   if (FLAG_trace_normalization) {
@@ -3523,7 +3523,6 @@ bool DescriptorArray::IsEqualTo(DescriptorArray* other) {
 #endif
 
 
-static StaticResource<StringInputBuffer> string_input_buffer;
 
 
 bool String::LooksValid() {
@@ -3539,7 +3538,8 @@ int String::Utf8Length() {
   // the string will be accessed later (for example by WriteUtf8)
   // so it's still a good idea.
   TryFlattenIfNotFlat();
-  Access<StringInputBuffer> buffer(&string_input_buffer);
+  Access<StringInputBuffer> buffer(&
+    v8_context()->objects_data_.string_input_buffer_);
   buffer->Reset(0, this);
   int result = 0;
   while (buffer->has_more())
@@ -3614,7 +3614,8 @@ SmartPointer<char> String::ToCString(AllowNullsFlag allow_nulls,
   if (length < 0) length = kMaxInt - offset;
 
   // Compute the size of the UTF-8 string. Start at the specified offset.
-  Access<StringInputBuffer> buffer(&string_input_buffer);
+  Access<StringInputBuffer> buffer(&
+    v8_context()->objects_data_.string_input_buffer_);
   buffer->Reset(offset, this);
   int character_position = offset;
   int utf8_bytes = 0;
@@ -3689,7 +3690,8 @@ SmartPointer<uc16> String::ToWideCString(RobustnessFlag robust_flag) {
     return SmartPointer<uc16>();
   }
 
-  Access<StringInputBuffer> buffer(&string_input_buffer);
+  Access<StringInputBuffer> buffer(&
+    v8_context()->objects_data_.string_input_buffer_);
   buffer->Reset(this);
 
   uc16* result = NewArray<uc16>(length() + 1);
@@ -3971,12 +3973,12 @@ const unibrow::byte* String::ReadBlock(String* input,
   return 0;
 }
 
-
-Relocatable* Relocatable::top_ = NULL;
-
+RelocatableData::RelocatableData()
+  :top_(NULL) {
+}
 
 void Relocatable::PostGarbageCollectionProcessing() {
-  Relocatable* current = top_;
+  Relocatable* current = v8_context()->relocatable_data_.top_;
   while (current != NULL) {
     current->PostGarbageCollection();
     current = current->prev_;
@@ -3986,21 +3988,22 @@ void Relocatable::PostGarbageCollectionProcessing() {
 
 // Reserve space for statics needing saving and restoring.
 int Relocatable::ArchiveSpacePerThread() {
-  return sizeof(top_);
+  return sizeof(RelocatableData);
 }
 
 
 // Archive statics that are thread local.
 char* Relocatable::ArchiveState(char* to) {
-  *reinterpret_cast<Relocatable**>(to) = top_;
-  top_ = NULL;
+  Relocatable*& top = v8_context()->relocatable_data_.top_;
+  *reinterpret_cast<Relocatable**>(to) = top;
+  top = NULL;
   return to + ArchiveSpacePerThread();
 }
 
 
 // Restore statics that are thread local.
 char* Relocatable::RestoreState(char* from) {
-  top_ = *reinterpret_cast<Relocatable**>(from);
+  v8_context()->relocatable_data_.top_ = *reinterpret_cast<Relocatable**>(from);
   return from + ArchiveSpacePerThread();
 }
 
@@ -4013,7 +4016,7 @@ char* Relocatable::Iterate(ObjectVisitor* v, char* thread_storage) {
 
 
 void Relocatable::Iterate(ObjectVisitor* v) {
-  Iterate(v, top_);
+  Iterate(v, v8_context()->relocatable_data_.top_);
 }
 
 
@@ -4392,7 +4395,6 @@ static inline bool CompareRawStringContents(Vector<Char> a, Vector<Char> b) {
 }
 
 
-static StringInputBuffer string_compare_buffer_b;
 
 
 template <typename IteratorA>
@@ -4406,13 +4408,14 @@ static inline bool CompareStringContentsPartial(IteratorA* ia, String* b) {
       return CompareStringContents(ia, &ib);
     }
   } else {
+    StringInputBuffer& string_compare_buffer_b =
+      v8_context()->objects_data_.string_compare_buffer_b_;
     string_compare_buffer_b.Reset(0, b);
     return CompareStringContents(ia, &string_compare_buffer_b);
   }
 }
 
 
-static StringInputBuffer string_compare_buffer_a;
 
 
 bool String::SlowEquals(String* other) {
@@ -4449,6 +4452,8 @@ bool String::SlowEquals(String* other) {
         }
       } else {
         VectorIterator<char> buf1(vec1);
+        StringInputBuffer& string_compare_buffer_b =
+          v8_context()->objects_data_.string_compare_buffer_b_;
         string_compare_buffer_b.Reset(0, other);
         return CompareStringContents(&buf1, &string_compare_buffer_b);
       }
@@ -4465,11 +4470,15 @@ bool String::SlowEquals(String* other) {
         }
       } else {
         VectorIterator<uc16> buf1(vec1);
+        StringInputBuffer& string_compare_buffer_b =
+          v8_context()->objects_data_.string_compare_buffer_b_;
         string_compare_buffer_b.Reset(0, other);
         return CompareStringContents(&buf1, &string_compare_buffer_b);
       }
     }
   } else {
+    StringInputBuffer& string_compare_buffer_a =
+      v8_context()->objects_data_.string_compare_buffer_a_;
     string_compare_buffer_a.Reset(0, this);
     return CompareStringContentsPartial(&string_compare_buffer_a, other);
   }

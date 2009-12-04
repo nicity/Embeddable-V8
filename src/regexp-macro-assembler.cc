@@ -196,7 +196,6 @@ NativeRegExpMacroAssembler::Result NativeRegExpMacroAssembler::Execute(
 }
 
 
-static unibrow::Mapping<unibrow::Ecma262Canonicalize> canonicalize;
 
 int NativeRegExpMacroAssembler::CaseInsensitiveCompareUC16(
     Address byte_offset1,
@@ -209,6 +208,8 @@ int NativeRegExpMacroAssembler::CaseInsensitiveCompareUC16(
   uc16* substring1 = reinterpret_cast<uc16*>(byte_offset1);
   uc16* substring2 = reinterpret_cast<uc16*>(byte_offset2);
   size_t length = byte_length >> 1;
+  unibrow::Mapping<unibrow::Ecma262Canonicalize>& canonicalize =
+    v8_context()->reg_exp_stack_data_.canonicalize_;
 
   for (size_t i = 0; i < length; i++) {
     unibrow::uchar c1 = substring1[i];

@@ -190,12 +190,133 @@ namespace internal {
 // Forward declaration of the GCTracer class.
 class GCTracer;
 class HeapStats;
+class HeapPrivateData;
 
+class HeapDataConstants {
+ public:
+  enum HeapState { NOT_IN_GC, SCAVENGE, MARK_COMPACT };
+
+  // Declare all the root indices.
+  enum RootListIndex {
+#define ROOT_INDEX_DECLARATION(type, name, camel_name) k##camel_name##RootIndex,
+      STRONG_ROOT_LIST(ROOT_INDEX_DECLARATION)
+#undef ROOT_INDEX_DECLARATION
+
+  // Utility type maps
+#define DECLARE_STRUCT_MAP(NAME, Name, name) k##Name##MapRootIndex,
+    STRUCT_LIST(DECLARE_STRUCT_MAP)
+#undef DECLARE_STRUCT_MAP
+
+#define SYMBOL_INDEX_DECLARATION(name, str) k##name##RootIndex,
+      SYMBOL_LIST(SYMBOL_INDEX_DECLARATION)
+#undef SYMBOL_DECLARATION
+
+      kSymbolTableRootIndex,
+      kStrongRootListLength = kSymbolTableRootIndex,
+      kRootListLength
+    };
+};
+
+class HeapData: public HeapDataConstants {
+  int reserved_semispace_size_;
+  int max_semispace_size_;
+  int initial_semispace_size_;
+  int max_old_generation_size_;
+  size_t code_range_size_;
+
+  // Flag is set when the heap has been configured.  The heap can be repeatedly
+  // configured through the API until it is setup.
+  bool heap_configured_;
+
+  // For keeping track of how much data has survived
+  // scavenge since last new space expansion.
+  int survived_since_last_expansion_;
+
+  int always_allocate_scope_depth_;
+  int linear_allocation_scope_depth_;
+  bool context_disposed_pending_;
+
+  NewSpace new_space_;
+  OldSpace* old_pointer_space_;
+  OldSpace* old_data_space_;
+  OldSpace* code_space_;
+  MapSpace* map_space_;
+  CellSpace* cell_space_;
+  LargeObjectSpace* lo_space_;
+
+  HeapState gc_state_;
+
+  int mc_count_;  // how many mark-compact collections happened
+  int gc_count_;  // how many gc happened
+
+#ifdef DEBUG
+  bool allocation_allowed_;
+
+  // If the --gc-interval flag is set to a positive value, this
+  // variable holds the value indicating the number of allocations
+  // remain until the next failure and garbage collection.
+  int allocation_timeout_;
+
+  // Do we expect to be able to handle allocation failure at this
+  // time?
+  bool disallow_allocation_failure_;
+#endif  // DEBUG
+
+  // Limit that triggers a global GC on the next (normally caused) GC.  This
+  // is checked when we have already decided to do a GC to help determine
+  // which collector to invoke.
+  int old_gen_promotion_limit_;
+
+  // Limit that triggers a global GC as soon as is reasonable.  This is
+  // checked before expanding a paged space in the old generation and on
+  // every allocation in large object space.
+  int old_gen_allocation_limit_;
+
+  // Limit on the amount of externally allocated memory allowed
+  // between global GCs. If reached a global GC is forced.
+  int external_allocation_limit_;
+
+  // The amount of external memory registered through the API kept alive
+  // by global handles
+  int amount_of_external_allocated_memory_;
+
+  // Caches the amount of external memory registered at the last global gc.
+  int amount_of_external_allocated_memory_at_last_global_gc_;
+
+  // Indicates that an allocation has failed in the old generation since the
+  // last GC.
+  int old_gen_exhausted_;
+
+  Object* roots_[kRootListLength];
+
+  // The special hidden symbol which is an empty string, but does not match
+  // any string when looked up in properties.
+  String* hidden_symbol_;
+
+  // GC callback function, called before and after mark-compact GC.
+  // Allocations in the callback function are disallowed.
+  GCCallback global_gc_prologue_callback_;
+  GCCallback global_gc_epilogue_callback_;
+
+  HeapPrivateData& heap_private_data_;
+
+  HeapData();
+  ~HeapData();
+
+  friend class Factory;
+  friend class DisallowAllocationFailure;
+  friend class AlwaysAllocateScope;
+  friend class LinearAllocationScope;
+  friend class Heap;
+  friend class V8Context;
+
+  DISALLOW_COPY_AND_ASSIGN(HeapData);
+};
 
 // The all static Heap captures the interface to the global object heap.
 // All JavaScript contexts by this process share the same object heap.
 
-class Heap : public AllStatic {
+class Heap : public AllStatic, public HeapDataConstants {
  public:
   // Configure heap size before setup. Return false if the heap has been
   // setup already.
@@ -224,12 +345,21 @@ class Heap : public AllStatic {
   // we reserve twice the amount needed for those in order to ensure
   // that new space can be aligned to its size.
   static int MaxReserved() {
-    return 4 * reserved_semispace_size_ + max_old_generation_size_;
+    return 4 * v8_context()->heap_data_.reserved_semispace_size_ +
+      v8_context()->heap_data_.max_old_generation_size_;
   }
-  static int MaxSemiSpaceSize() { return max_semispace_size_; }
-  static int ReservedSemiSpaceSize() { return reserved_semispace_size_; }
-  static int InitialSemiSpaceSize() { return initial_semispace_size_; }
-  static int MaxOldGenerationSize() { return max_old_generation_size_; }
+  static int MaxSemiSpaceSize() {
+    return v8_context()->heap_data_.max_semispace_size_;
+  }
+  static int ReservedSemiSpaceSize() {
+    return v8_context()->heap_data_.reserved_semispace_size_;
+  }
+  static int InitialSemiSpaceSize() {
+    return v8_context()->heap_data_.initial_semispace_size_;
+  }
+  static int MaxOldGenerationSize() {
+    return v8_context()->heap_data_.max_old_generation_size_;
+  }
 
   // Returns the capacity of the heap in bytes w/o growing. Heap grows when
   // more spaces are needed until it reaches the limit.
@@ -252,35 +382,60 @@ class Heap : public AllStatic {
   // Return the starting address and a mask for the new space.  And-masking an
   // address with the mask will result in the start address of the new space
   // for all addresses in either semispace.
-  static Address NewSpaceStart() { return new_space_.start(); }
-  static uintptr_t NewSpaceMask() { return new_space_.mask(); }
-  static Address NewSpaceTop() { return new_space_.top(); }
+  static Address NewSpaceStart() {
+    return v8_context()->heap_data_.new_space_.start();
+  }
+  static uintptr_t NewSpaceMask() {
+    return v8_context()->heap_data_.new_space_.mask();
+  }
+  static Address NewSpaceTop() {
+    return v8_context()->heap_data_.new_space_.top();
+  }
 
-  static NewSpace* new_space() { return &new_space_; }
-  static OldSpace* old_pointer_space() { return old_pointer_space_; }
-  static OldSpace* old_data_space() { return old_data_space_; }
-  static OldSpace* code_space() { return code_space_; }
-  static MapSpace* map_space() { return map_space_; }
-  static CellSpace* cell_space() { return cell_space_; }
-  static LargeObjectSpace* lo_space() { return lo_space_; }
+  static NewSpace* new_space() {
+    return &v8_context()->heap_data_.new_space_;
+  }
+  static OldSpace* old_pointer_space() {
+    return v8_context()->heap_data_.old_pointer_space_;
+  }
+  static OldSpace* old_data_space() {
+    return v8_context()->heap_data_.old_data_space_;
+  }
+  static OldSpace* code_space() {
+    return v8_context()->heap_data_.code_space_;
+  }
+  static MapSpace* map_space() {
+    return v8_context()->heap_data_.map_space_;
+  }
+  static CellSpace* cell_space() {
+    return v8_context()->heap_data_.cell_space_;
+  }
+  static LargeObjectSpace* lo_space() {
+    return v8_context()->heap_data_.lo_space_;
+  }
 
-  static bool always_allocate() { return always_allocate_scope_depth_ != 0; }
+  static bool always_allocate() {
+    return v8_context()->heap_data_.always_allocate_scope_depth_ != 0;
+  }
   static Address always_allocate_scope_depth_address() {
-    return reinterpret_cast<Address>(&always_allocate_scope_depth_);
+    return reinterpret_cast<Address>(
+      &v8_context()->heap_data_.always_allocate_scope_depth_);
   }
   static bool linear_allocation() {
-      return linear_allocation_scope_depth_ != 0;
+      return v8_context()->heap_data_.linear_allocation_scope_depth_ != 0;
   }
 
   static Address* NewSpaceAllocationTopAddress() {
-    return new_space_.allocation_top_address();
+    return v8_context()->heap_data_.new_space_.allocation_top_address();
   }
   static Address* NewSpaceAllocationLimitAddress() {
-    return new_space_.allocation_limit_address();
+    return v8_context()->heap_data_.new_space_.allocation_limit_address();
   }
 
   // Uncommit unused semi space.
-  static bool UncommitFromSpace() { return new_space_.UncommitFromSpace(); }
+  static bool UncommitFromSpace() {
+    return v8_context()->heap_data_.new_space_.UncommitFromSpace();
+  }
 
 #ifdef ENABLE_HEAP_PROTECTION
   // Protect/unprotect the heap by marking all spaces read-only/writable.
@@ -643,20 +798,22 @@ class Heap : public AllStatic {
 #endif
 
   static void SetGlobalGCPrologueCallback(GCCallback callback) {
-    global_gc_prologue_callback_ = callback;
+    v8_context()->heap_data_.global_gc_prologue_callback_ = callback;
   }
   static void SetGlobalGCEpilogueCallback(GCCallback callback) {
-    global_gc_epilogue_callback_ = callback;
+    v8_context()->heap_data_.global_gc_epilogue_callback_ = callback;
   }
 
   // Heap root getters.  We have versions with and without type::cast() here.
   // You can't use type::cast during GC because the assert fails.
 #define ROOT_ACCESSOR(type, name, camel_name)                                  \
   static inline type* name() {                                                 \
-    return type::cast(roots_[k##camel_name##RootIndex]);                       \
+    return type::cast(                                                         \
+      v8_context()->heap_data_.roots_[k##camel_name##RootIndex]);              \
   }                                                                            \
   static inline type* raw_unchecked_##name() {                                 \
-    return reinterpret_cast<type*>(roots_[k##camel_name##RootIndex]);          \
+    return reinterpret_cast<type*>(                                            \
+      v8_context()->heap_data_.roots_[k##camel_name##RootIndex]);              \
   }
   ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
@@ -664,20 +821,22 @@ class Heap : public AllStatic {
 // Utility type maps
 #define STRUCT_MAP_ACCESSOR(NAME, Name, name)                                  \
     static inline Map* name##_map() {                                          \
-      return Map::cast(roots_[k##Name##MapRootIndex]);                         \
+      return Map::cast(v8_context()->heap_data_.roots_[k##Name##MapRootIndex]);\
     }
   STRUCT_LIST(STRUCT_MAP_ACCESSOR)
 #undef STRUCT_MAP_ACCESSOR
 
 #define SYMBOL_ACCESSOR(name, str) static inline String* name() {              \
-    return String::cast(roots_[k##name##RootIndex]);                           \
+    return String::cast(v8_context()->heap_data_.roots_[k##name##RootIndex]);  \
   }
   SYMBOL_LIST(SYMBOL_ACCESSOR)
 #undef SYMBOL_ACCESSOR
 
   // The hidden_symbol is special because it is the empty string, but does
   // not match the empty string.
-  static String* hidden_symbol() { return hidden_symbol_; }
+  static String* hidden_symbol() {
+    return v8_context()->heap_data_.hidden_symbol_;
+  }
 
   // Iterates over all roots in the heap.
   static void IterateRoots(ObjectVisitor* v, VisitMode mode);
@@ -717,19 +876,19 @@ class Heap : public AllStatic {
 
   // Sets the stub_cache_ (only used when expanding the dictionary).
   static void public_set_code_stubs(NumberDictionary* value) {
-    roots_[kCodeStubsRootIndex] = value;
+    v8_context()->heap_data_.roots_[kCodeStubsRootIndex] = value;
   }
 
   // Sets the non_monomorphic_cache_ (only used when expanding the dictionary).
   static void public_set_non_monomorphic_cache(NumberDictionary* value) {
-    roots_[kNonMonomorphicCacheRootIndex] = value;
+    v8_context()->heap_data_.roots_[kNonMonomorphicCacheRootIndex] = value;
   }
 
   // Update the next script id.
   static inline void SetLastScriptId(Object* last_script_id);
 
   // Generated code can embed this address to get access to the roots.
-  static Object** roots_address() { return roots_; }
+  static Object** roots_address() { return v8_context()->heap_data_.roots_; }
 
 #ifdef DEBUG
   static void Print();
@@ -767,15 +926,18 @@ class Heap : public AllStatic {
   // Invoke Shrink on shrinkable spaces.
   static void Shrink();
 
-  enum HeapState { NOT_IN_GC, SCAVENGE, MARK_COMPACT };
-  static inline HeapState gc_state() { return gc_state_; }
+  static inline HeapState gc_state() {
+    return v8_context()->heap_data_.gc_state_;
+  }
 
 #ifdef DEBUG
-  static bool IsAllocationAllowed() { return allocation_allowed_; }
+  static bool IsAllocationAllowed() {
+    return v8_context()->heap_data_.allocation_allowed_;
+  }
   static inline bool allow_allocation(bool enable);
 
   static bool disallow_allocation_failure() {
-    return disallow_allocation_failure_;
+    return v8_context()->heap_data_.disallow_allocation_failure_;
   }
 
   static void TracePathToObject();
@@ -827,38 +989,19 @@ class Heap : public AllStatic {
   // should force the next GC (caused normally) to be a full one.
   static bool OldGenerationPromotionLimitReached() {
     return (PromotedSpaceSize() + PromotedExternalMemorySize())
-           > old_gen_promotion_limit_;
+           > v8_context()->heap_data_.old_gen_promotion_limit_;
   }
 
   // True if we have reached the allocation limit in the old generation that
   // should artificially cause a GC right now.
   static bool OldGenerationAllocationLimitReached() {
     return (PromotedSpaceSize() + PromotedExternalMemorySize())
-           > old_gen_allocation_limit_;
+           > v8_context()->heap_data_.old_gen_allocation_limit_;
   }
 
   // Can be called when the embedding application is idle.
   static bool IdleNotification();
 
-  // Declare all the root indices.
-  enum RootListIndex {
-#define ROOT_INDEX_DECLARATION(type, name, camel_name) k##camel_name##RootIndex,
-    STRONG_ROOT_LIST(ROOT_INDEX_DECLARATION)
-#undef ROOT_INDEX_DECLARATION
-
-// Utility type maps
-#define DECLARE_STRUCT_MAP(NAME, Name, name) k##Name##MapRootIndex,
-  STRUCT_LIST(DECLARE_STRUCT_MAP)
-#undef DECLARE_STRUCT_MAP
-
-#define SYMBOL_INDEX_DECLARATION(name, str) k##name##RootIndex,
-    SYMBOL_LIST(SYMBOL_INDEX_DECLARATION)
-#undef SYMBOL_DECLARATION
-
-    kSymbolTableRootIndex,
-    kStrongRootListLength = kSymbolTableRootIndex,
-    kRootListLength
-  };
 
   static Object* NumberToString(Object* number);
 
@@ -869,19 +1012,6 @@ class Heap : public AllStatic {
   static void RecordStats(HeapStats* stats);
 
  private:
-  static int reserved_semispace_size_;
-  static int max_semispace_size_;
-  static int initial_semispace_size_;
-  static int max_old_generation_size_;
-  static size_t code_range_size_;
-
-  // For keeping track of how much data has survived
-  // scavenge since last new space expansion.
-  static int survived_since_last_expansion_;
-
-  static int always_allocate_scope_depth_;
-  static int linear_allocation_scope_depth_;
-  static bool context_disposed_pending_;
 
   // The number of MapSpace pages is limited by the way we pack
   // Map pointers during GC.
@@ -894,70 +1024,18 @@ class Heap : public AllStatic {
   static const int kMaxObjectSizeInNewSpace = 256*KB;
 #endif
 
-  static NewSpace new_space_;
-  static OldSpace* old_pointer_space_;
-  static OldSpace* old_data_space_;
-  static OldSpace* code_space_;
-  static MapSpace* map_space_;
-  static CellSpace* cell_space_;
-  static LargeObjectSpace* lo_space_;
-  static HeapState gc_state_;
-
   // Returns the size of object residing in non new spaces.
   static int PromotedSpaceSize();
 
   // Returns the amount of external memory registered since last global gc.
   static int PromotedExternalMemorySize();
 
-  static int mc_count_;  // how many mark-compact collections happened
-  static int gc_count_;  // how many gc happened
-
 #define ROOT_ACCESSOR(type, name, camel_name)                                  \
   static inline void set_##name(type* value) {                                 \
-    roots_[k##camel_name##RootIndex] = value;                                  \
+    v8_context()->heap_data_.roots_[k##camel_name##RootIndex] = value;         \
   }
   ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
-
-#ifdef DEBUG
-  static bool allocation_allowed_;
-
-  // If the --gc-interval flag is set to a positive value, this
-  // variable holds the value indicating the number of allocations
-  // remain until the next failure and garbage collection.
-  static int allocation_timeout_;
-
-  // Do we expect to be able to handle allocation failure at this
-  // time?
-  static bool disallow_allocation_failure_;
-#endif  // DEBUG
-
-  // Limit that triggers a global GC on the next (normally caused) GC.  This
-  // is checked when we have already decided to do a GC to help determine
-  // which collector to invoke.
-  static int old_gen_promotion_limit_;
-
-  // Limit that triggers a global GC as soon as is reasonable.  This is
-  // checked before expanding a paged space in the old generation and on
-  // every allocation in large object space.
-  static int old_gen_allocation_limit_;
-
-  // Limit on the amount of externally allocated memory allowed
-  // between global GCs. If reached a global GC is forced.
-  static int external_allocation_limit_;
-
-  // The amount of external memory registered through the API kept alive
-  // by global handles
-  static int amount_of_external_allocated_memory_;
-
-  // Caches the amount of external memory registered at the last global gc.
-  static int amount_of_external_allocated_memory_at_last_global_gc_;
-
-  // Indicates that an allocation has failed in the old generation since the
-  // last GC.
-  static int old_gen_exhausted_;
-
-  static Object* roots_[kRootListLength];
 
   struct StringTypeTable {
     InstanceType type;
@@ -979,15 +1057,6 @@ class Heap : public AllStatic {
   static const StringTypeTable string_type_table[];
   static const ConstantSymbolTable constant_symbol_table[];
   static const StructTable struct_table[];
-
-  // The special hidden symbol which is an empty string, but does not match
-  // any string when looked up in properties.
-  static String* hidden_symbol_;
-
-  // GC callback function, called before and after mark-compact GC.
-  // Allocations in the callback function are disallowed.
-  static GCCallback global_gc_prologue_callback_;
-  static GCCallback global_gc_epilogue_callback_;
 
   // Checks whether a global GC is necessary
   static GarbageCollector SelectGarbageCollector(AllocationSpace space);
@@ -1135,13 +1204,13 @@ class AlwaysAllocateScope {
     // non-handle code to call handle code. The code still works but
     // performance will degrade, so we want to catch this situation
     // in debug mode.
-    ASSERT(Heap::always_allocate_scope_depth_ == 0);
-    Heap::always_allocate_scope_depth_++;
+    ASSERT(v8_context()->heap_data_.always_allocate_scope_depth_ == 0);
+    v8_context()->heap_data_.always_allocate_scope_depth_++;
   }
 
   ~AlwaysAllocateScope() {
-    Heap::always_allocate_scope_depth_--;
-    ASSERT(Heap::always_allocate_scope_depth_ == 0);
+    v8_context()->heap_data_.always_allocate_scope_depth_--;
+    ASSERT(v8_context()->heap_data_.always_allocate_scope_depth_ == 0);
   }
 };
 
@@ -1149,12 +1218,12 @@ class AlwaysAllocateScope {
 class LinearAllocationScope {
  public:
   LinearAllocationScope() {
-    Heap::linear_allocation_scope_depth_++;
+    v8_context()->heap_data_.linear_allocation_scope_depth_++;
   }
 
   ~LinearAllocationScope() {
-    Heap::linear_allocation_scope_depth_--;
-    ASSERT(Heap::linear_allocation_scope_depth_ >= 0);
+    v8_context()->heap_data_.linear_allocation_scope_depth_--;
+    ASSERT(v8_context()->heap_data_.linear_allocation_scope_depth_ >= 0);
   }
 };
 
@@ -1280,6 +1349,28 @@ class HeapIterator BASE_EMBEDDED {
   ObjectIterator* object_iterator_;
 };
 
+class KeyedLookupCacheData {
+  struct Key {
+    Map* map;
+    String* name;
+  };
+  static const int kLength = 64;
+  Key keys_[kLength];
+  int field_offsets_[kLength];
+
+  KeyedLookupCacheData() {
+    for (int i = 0; i < kLength; ++i) {
+      keys_[i].map = NULL;
+      keys_[i].name = NULL;
+      i[field_offsets_] = 0;
+    }
+  }
+
+  friend class KeyedLookupCache;
+  friend class V8Context;
+
+  DISALLOW_COPY_AND_ASSIGN(KeyedLookupCacheData);
+};
 
 // Cache for mapping (map, property name) into field offset.
 // Cleared at startup and prior to mark sweep collection.
@@ -1295,16 +1386,30 @@ class KeyedLookupCache {
   static void Clear();
  private:
   static inline int Hash(Map* map, String* name);
-  static const int kLength = 64;
-  struct Key {
-    Map* map;
-    String* name;
-  };
-  static Key keys_[kLength];
-  static int field_offsets_[kLength];
 };
 
+class DescriptorLookupCacheData {
+  static const int kLength = 64;
+  struct Key {
+    DescriptorArray* array;
+    String* name;
+  };
 
+  Key keys_[kLength];
+  int results_[kLength];
+
+  DescriptorLookupCacheData() {
+    for (int i = 0; i < kLength; ++i) {
+      keys_[i].array = NULL;
+      keys_[i].name = NULL;
+      i[results_] = 0;
+    }
+  }
+
+  friend class DescriptorLookupCache;
+  friend class V8Context;
+  DISALLOW_COPY_AND_ASSIGN(DescriptorLookupCacheData);
+};
 
 // Cache for mapping (array, property name) into descriptor index.
 // The cache contains both positive and negative results.
@@ -1317,8 +1422,14 @@ class DescriptorLookupCache {
   static int Lookup(DescriptorArray* array, String* name) {
     if (!StringShape(name).IsSymbol()) return kAbsent;
     int index = Hash(array, name);
-    Key& key = keys_[index];
-    if ((key.array == array) && (key.name == name)) return results_[index];
+    DescriptorLookupCacheData& descriptor_lookup_cache_data =
+      v8_context()->descriptor_lookup_cache_data_;
+    DescriptorLookupCacheData::Key& key =
+      descriptor_lookup_cache_data.keys_[index];
+
+    if ((key.array == array) && (key.name == name)) {
+      return descriptor_lookup_cache_data.results_[index];
+    }
     return kAbsent;
   }
 
@@ -1327,10 +1438,14 @@ class DescriptorLookupCache {
     ASSERT(result != kAbsent);
     if (StringShape(name).IsSymbol()) {
       int index = Hash(array, name);
-      Key& key = keys_[index];
+      DescriptorLookupCacheData& descriptor_lookup_cache_data =
+        v8_context()->descriptor_lookup_cache_data_;
+      DescriptorLookupCacheData::Key& key =
+        descriptor_lookup_cache_data.keys_[index];
+
       key.array = array;
       key.name = name;
-      results_[index] = result;
+      descriptor_lookup_cache_data.results_[index] = result;
     }
   }
 
@@ -1345,17 +1460,8 @@ class DescriptorLookupCache {
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(array)) >> 2;
     uintptr_t name_hash =
         static_cast<uint32_t>(reinterpret_cast<uintptr_t>(name)) >> 2;
-    return (array_hash ^ name_hash) % kLength;
+    return (array_hash ^ name_hash) % DescriptorLookupCacheData::kLength;
   }
-
-  static const int kLength = 64;
-  struct Key {
-    DescriptorArray* array;
-    String* name;
-  };
-
-  static Key keys_[kLength];
-  static int results_[kLength];
 };
 
 
@@ -1419,11 +1525,11 @@ class MarkingStack {
 class DisallowAllocationFailure {
  public:
   DisallowAllocationFailure() {
-    old_state_ = Heap::disallow_allocation_failure_;
-    Heap::disallow_allocation_failure_ = true;
+    old_state_ = v8_context()->heap_data_.disallow_allocation_failure_;
+    v8_context()->heap_data_.disallow_allocation_failure_ = true;
   }
   ~DisallowAllocationFailure() {
-    Heap::disallow_allocation_failure_ = old_state_;
+    v8_context()->heap_data_.disallow_allocation_failure_ = old_state_;
   }
  private:
   bool old_state_;
@@ -1538,19 +1644,38 @@ class GCTracer BASE_EMBEDDED {
   int previous_marked_count_;
 };
 
-
-class TranscendentalCache {
+class TranscendentalCacheTypes {
  public:
   enum Type {ACOS, ASIN, ATAN, COS, EXP, LOG, SIN, TAN, kNumberOfCaches};
+};
 
+class TranscendentalCache;
+
+class TranscendentalCacheData: public TranscendentalCacheTypes {
+  TranscendentalCache* caches_[kNumberOfCaches];
+
+  friend class TranscendentalCache;
+  friend class V8Context;
+
+  TranscendentalCacheData() {
+    for (int i = 0; i < kNumberOfCaches; ++i) caches_[i] = NULL;
+  }
+  DISALLOW_COPY_AND_ASSIGN(TranscendentalCacheData);
+};
+
+class TranscendentalCache: public TranscendentalCacheTypes {
+ public:
   explicit TranscendentalCache(Type t);
 
   // Returns a heap number with f(input), where f is a math function specified
   // by the 'type' argument.
   static inline Object* Get(Type type, double input) {
-    TranscendentalCache* cache = caches_[type];
+    TranscendentalCacheData& transcendental_cache_data =
+      v8_context()->transcendental_cache_data_;
+    TranscendentalCache* cache = transcendental_cache_data.caches_[type];
     if (cache == NULL) {
-      caches_[type] = cache = new TranscendentalCache(type);
+      transcendental_cache_data.caches_[type] = cache =
+        new TranscendentalCache(type);
     }
     return cache->Get(input);
   }
@@ -1617,7 +1742,6 @@ class TranscendentalCache {
     hash ^= hash >> 8;
     return (hash & (kCacheSize - 1));
   }
-  static TranscendentalCache* caches_[kNumberOfCaches];
   Element elements_[kCacheSize];
   Type type_;
 };
