@@ -78,15 +78,20 @@ XMMRegister xmm15 = { 15 };
 
 // The required user mode extensions in X64 are (from AMD64 ABI Table A.1):
 //   fpu, tsc, cx8, cmov, mmx, sse, sse2, fxsr, syscall
-uint64_t CpuFeatures::supported_ = kDefaultCpuFeatures;
-uint64_t CpuFeatures::enabled_ = 0;
-uint64_t CpuFeatures::found_by_runtime_probing_ = 0;
+AssemblerData::AssemblerData()
+  :BasicAssemblerData(),
+  spare_buffer_(NULL),
+  supported_(CpuFeatures::kDefaultCpuFeatures),
+  enabled_(0),
+  found_by_runtime_probing_(0) {
+}
 
 void CpuFeatures::Probe()  {
+  AssemblerData* data = v8_context()->assembler_data_;
   ASSERT(Heap::HasBeenSetup());
-  ASSERT(supported_ == kDefaultCpuFeatures);
+  ASSERT(data->supported_ == kDefaultCpuFeatures);
   if (Serializer::enabled()) {
-    supported_ |= OS::CpuFeaturesImpliedByPlatform();
+    data->supported_ |= OS::CpuFeaturesImpliedByPlatform();
     return;  // No features if we might serialize.
   }
 
@@ -121,7 +126,7 @@ void CpuFeatures::Probe()  {
   // safe here.
   __ bind(&cpuid);
   __ movq(rax, Immediate(1));
-  supported_ = kDefaultCpuFeatures | (1 << CPUID);
+  data->supported_ = kDefaultCpuFeatures | (1 << CPUID);
   { Scope fscope(CPUID);
     __ cpuid();
     // Move the result from ecx:edx to rdi.
@@ -133,7 +138,7 @@ void CpuFeatures::Probe()  {
     __ movq(rax, 0x80000001, RelocInfo::NONE);
     __ cpuid();
   }
-  supported_ = kDefaultCpuFeatures;
+  data->supported_ = kDefaultCpuFeatures;
 
   // Put the CPU flags in rax.
   // rax = (rcx & 1) | (rdi & ~1) | (1 << CPUID).
@@ -163,12 +168,12 @@ void CpuFeatures::Probe()  {
                       Code::cast(code), "CpuFeatures::Probe"));
   typedef uint64_t (*F0)();
   F0 probe = FUNCTION_CAST<F0>(Code::cast(code)->entry());
-  supported_ = probe();
-  found_by_runtime_probing_ = supported_;
-  found_by_runtime_probing_ &= ~kDefaultCpuFeatures;
+  data->supported_ = probe();
+  data->found_by_runtime_probing_ = data->supported_;
+  data->found_by_runtime_probing_ &= ~kDefaultCpuFeatures;
   uint64_t os_guarantees = OS::CpuFeaturesImpliedByPlatform();
-  supported_ |= os_guarantees;
-  found_by_runtime_probing_ &= ~os_guarantees;
+  data->supported_ |= os_guarantees;
+  data->found_by_runtime_probing_ &= ~os_guarantees;
   // SSE2 and CMOV must be available on an X64 CPU.
   ASSERT(IsSupported(CPUID));
   ASSERT(IsSupported(SSE2));
@@ -271,18 +276,16 @@ Operand::Operand(Register base,
 static void InitCoverageLog();
 #endif
 
-byte* Assembler::spare_buffer_ = NULL;
-
 Assembler::Assembler(void* buffer, int buffer_size)
     : code_targets_(100) {
   if (buffer == NULL) {
     // do our own buffer management
     if (buffer_size <= kMinimalBufferSize) {
       buffer_size = kMinimalBufferSize;
-
-      if (spare_buffer_ != NULL) {
-        buffer = spare_buffer_;
-        spare_buffer_ = NULL;
+      AssemblerData* const data = v8_context()->assembler_data_;
+      if (data->spare_buffer_ != NULL) {
+        buffer = data->spare_buffer_;
+        data->spare_buffer_ = NULL;
       }
     }
     if (buffer == NULL) {
@@ -327,8 +330,9 @@ Assembler::Assembler(void* buffer, int buffer_size)
 
 Assembler::~Assembler() {
   if (own_buffer_) {
-    if (spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
-      spare_buffer_ = buffer_;
+    AssemblerData* const data = v8_context()->assembler_data_;
+    if (data->spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
+      data->spare_buffer_ = buffer_;
     } else {
       DeleteArray(buffer_);
     }
@@ -428,8 +432,9 @@ void Assembler::GrowBuffer() {
           reloc_info_writer.pos(), desc.reloc_size);
 
   // switch buffers
-  if (spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
-    spare_buffer_ = buffer_;
+  AssemblerData* const data = v8_context()->assembler_data_;
+  if (data->spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
+    data->spare_buffer_ = buffer_;
   } else {
     DeleteArray(buffer_);
   }
@@ -2535,5 +2540,13 @@ void Assembler::WriteRecordedPositions() {
 const int RelocInfo::kApplyMask = RelocInfo::kCodeTargetMask |
                                   1 << RelocInfo::INTERNAL_REFERENCE |
                                   1 << RelocInfo::JS_RETURN;
+
+void Assembler::PostConstruct() {
+  v8_context()->assembler_data_ = new AssemblerData();
+}
+
+void Assembler::PreDestroy() {
+  delete v8_context()->assembler_data_;
+}
 
 } }  // namespace v8::internal

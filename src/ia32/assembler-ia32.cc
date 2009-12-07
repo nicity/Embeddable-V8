@@ -46,9 +46,6 @@ namespace internal {
 // -----------------------------------------------------------------------------
 // Implementation of CpuFeatures
 
-// Safe default is no features.
-
-
 // The Probe method needs executable memory, so it uses Heap::CreateCode.
 // Allocation failure is silent and leads to safe default.
 void CpuFeatures::Probe() {

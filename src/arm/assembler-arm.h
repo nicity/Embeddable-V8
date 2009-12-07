@@ -993,6 +993,10 @@ class Assembler : public Malloced {
   friend class RegExpMacroAssemblerARM;
   friend class RelocInfo;
   friend class CodePatcher;
+
+  static void PostConstruct();
+  static void PreDestroy();
+  friend class V8Context;
 };
 
 } }  // namespace v8::internal

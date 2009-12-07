@@ -329,17 +329,26 @@ const Instr kLdrPCPattern = al | B26 | L | pc.code() * B16;
 
 // spare_buffer_
 static const int kMinimalBufferSize = 4*KB;
-static byte* spare_buffer_ = NULL;
+class AssemblerData:public BasicAssemblerData {
+ public:
+  // A previously allocated buffer of kMinimalBufferSize bytes, or NULL.
+  byte* spare_buffer_;
+ private:
+  AssemblerData() :spare_buffer_(NULL) {}
+  ~AssemblerData() { delete spare_buffer_; }
+  friend class Assembler;
+  DISALLOW_COPY_AND_ASSIGN(AssemblerData);
+};
 
 Assembler::Assembler(void* buffer, int buffer_size) {
   if (buffer == NULL) {
     // do our own buffer management
     if (buffer_size <= kMinimalBufferSize) {
       buffer_size = kMinimalBufferSize;
-
-      if (spare_buffer_ != NULL) {
-        buffer = spare_buffer_;
-        spare_buffer_ = NULL;
+      AssemblerData* const data = v8_context()->assembler_data_;
+      if (data->spare_buffer_ != NULL) {
+        buffer = data->spare_buffer_;
+        data->spare_buffer_ = NULL;
       }
     }
     if (buffer == NULL) {
@@ -376,8 +385,9 @@ Assembler::Assembler(void* buffer, int buffer_size) {
 
 Assembler::~Assembler() {
   if (own_buffer_) {
-    if (spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
-      spare_buffer_ = buffer_;
+    AssemblerData* const data = v8_context()->assembler_data_;
+    if (data->spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
+      data->spare_buffer_ = buffer_;
     } else {
       DeleteArray(buffer_);
     }
@@ -1827,5 +1837,12 @@ void Assembler::CheckConstPool(bool force_emit, bool require_jump) {
   next_buffer_check_ = pc_offset() + kCheckConstInterval;
 }
 
+void Assembler::PostConstruct() {
+  v8_context()->assembler_data_ = new AssemblerData();
+}
+
+void Assembler::PreDestroy() {
+  delete v8_context()->assembler_data_;
+}
 
 } }  // namespace v8::internal

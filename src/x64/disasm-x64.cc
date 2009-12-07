@@ -1515,7 +1515,7 @@ static const char* xmm_regs[16] = {
 
 const char* NameConverter::NameOfAddress(byte* addr) const {
   v8::internal::EmbeddedVector<char, 32>& tmp_buffer =
-    v8v8_context()->disassembler_data_->tmp_buffer_;
+    v8::v8_context()->disassembler_data_->tmp_buffer_;
   v8::internal::OS::SNPrintF(tmp_buffer, "%p", addr);
   return tmp_buffer.start();
 }

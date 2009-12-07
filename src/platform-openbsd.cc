@@ -102,8 +102,10 @@ int OS::ActivationFrameAlignment() {
 static void* lowest_ever_allocated = reinterpret_cast<void*>(-1);
 static void* highest_ever_allocated = reinterpret_cast<void*>(0);
 
+static MutexLockAdapter heap_limits_lock(OS::CreateMutex());
 
 static void UpdateAllocatedSpaceLimits(void* address, int size) {
+  V8SharedStateLocker heap_limits_locker(&heap_limits_lock);
   lowest_ever_allocated = Min(lowest_ever_allocated, address);
   highest_ever_allocated =
       Max(highest_ever_allocated,
@@ -112,6 +114,7 @@ static void UpdateAllocatedSpaceLimits(void* address, int size) {
 
 
 bool OS::IsOutsideAllocatedSpace(void* address) {
+  V8SharedStateLocker heap_limits_locker(&heap_limits_lock);
   return address < lowest_ever_allocated || address >= highest_ever_allocated;
 }
 

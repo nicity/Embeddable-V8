@@ -352,6 +352,20 @@ class Operand BASE_EMBEDDED {
   friend class Assembler;
 };
 
+class AssemblerData:public BasicAssemblerData {
+ public:
+  // A previously allocated buffer of kMinimalBufferSize bytes, or NULL.
+  byte* spare_buffer_;
+  // CPU features
+  uint64_t supported_;
+  uint64_t enabled_;
+  uint64_t found_by_runtime_probing_;
+ private:
+  AssemblerData();
+  ~AssemblerData() { delete spare_buffer_; }
+  friend class Assembler;
+  DISALLOW_COPY_AND_ASSIGN(AssemblerData);
+};
 
 // CpuFeatures keeps track of which features are supported by the target CPU.
 // Supported features must be enabled by a Scope before use.
@@ -374,11 +388,13 @@ class CpuFeatures : public AllStatic {
     if (f == CMOV && !FLAG_enable_cmov) return false;
     if (f == RDTSC && !FLAG_enable_rdtsc) return false;
     if (f == SAHF && !FLAG_enable_sahf) return false;
-    return (supported_ & (V8_UINT64_C(1) << f)) != 0;
+    return (v8_context()->assembler_data_->supported_ &
+      (V8_UINT64_C(1) << f)) != 0;
   }
   // Check whether a feature is currently enabled.
   static bool IsEnabled(CpuFeature f) {
-    return (enabled_ & (V8_UINT64_C(1) << f)) != 0;
+    return (v8_context()->assembler_data_->enabled_ &
+      (V8_UINT64_C(1) << f)) != 0;
   }
   // Enable a specified feature within a scope.
   class Scope BASE_EMBEDDED {
@@ -386,12 +402,14 @@ class CpuFeatures : public AllStatic {
    public:
     explicit Scope(CpuFeature f) {
       uint64_t mask = (V8_UINT64_C(1) << f);
+      AssemblerData* const data = v8_context()->assembler_data_;
       ASSERT(CpuFeatures::IsSupported(f));
-      ASSERT(!Serializer::enabled() || (found_by_runtime_probing_ & mask) == 0);
-      old_enabled_ = CpuFeatures::enabled_;
-      CpuFeatures::enabled_ |= mask;
+      ASSERT(!Serializer::enabled() ||
+             (data->found_by_runtime_probing_ & mask) == 0);
+      old_enabled_ = data->enabled_;
+      data->enabled_ |= mask;
     }
-    ~Scope() { CpuFeatures::enabled_ = old_enabled_; }
+    ~Scope() { v8_context()->assembler_data_->enabled_ = old_enabled_; }
    private:
     uint64_t old_enabled_;
 #else
@@ -403,9 +421,7 @@ class CpuFeatures : public AllStatic {
   // Safe defaults include SSE2 and CMOV for X64. It is always available, if
   // anyone checks, but they shouldn't need to check.
   static const uint64_t kDefaultCpuFeatures = (1 << SSE2 | 1 << CMOV);
-  static uint64_t supported_;
-  static uint64_t enabled_;
-  static uint64_t found_by_runtime_probing_;
+  friend class AssemblerData;
 };
 
 
@@ -1348,8 +1364,6 @@ class Assembler : public Malloced {
   int buffer_size_;
   // True if the assembler owns the buffer, false if buffer is external.
   bool own_buffer_;
-  // A previously allocated buffer of kMinimalBufferSize bytes, or NULL.
-  static byte* spare_buffer_;
 
   // code generation
   byte* pc_;  // the program counter; moves forward
@@ -1364,6 +1378,10 @@ class Assembler : public Malloced {
   int current_position_;
   int written_statement_position_;
   int written_position_;
+
+  static void PostConstruct();
+  static void PreDestroy();
+  friend class V8Context;
 };
 
 
